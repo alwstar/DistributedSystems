@@ -858,22 +858,70 @@ class Server(multiprocessing.Process):
 
     def handle_leader_tasks(self):
         # Perform leader-specific tasks here
-        print(self.server_id+": "+"++++++++++++++++++++++++++++++++++++")
-        print(self.server_id+": "+str(self.server_address)+" is now the leader")
-        print(self.server_id+": "+"++++++++++++++++++++++++++++++++++++")
-        print("Server Cache:", self.local_servers_cache)
-        del self.local_servers_cache[self.server_id]
-        print("Server Cache:", self.local_servers_cache)
+        print(f"{self.server_id}: ++++++++++++++++++++++++++++++++++++")
+        print(f"{self.server_id}: {self.server_address} is now the leader")
+        print(f"{self.server_id}: ++++++++++++++++++++++++++++++++++++")
+        
+        # Save old ID before changing to MAIN
         old_server_id = self.server_id
         self.server_id = "MAIN"
-        print(self.server_id+": "+"Server ID was changed from: "+str(old_server_id)+" to "+str(self.server_id))
+        print(f"{self.server_id}: Server ID was changed from: {old_server_id} to {self.server_id}")
 
-        # check if new MAIN server was leader of any groupchats and reassign these to serverID MAIN
+        # Reassign chat groups
         self.reassign_chat_groups(old_server_id)
-        # reassign the groupchats of the old MAIN server to the new MAIN server
         self.reassign_chat_groups(self.server_id)
-        self.stop_threads()
+
+        # Stop non-leader threads
+        self.keep_running_nonLeader = False
+        time.sleep(2)  # Give threads time to stop
+
+        # Start main server functionality
+        print(f"{self.server_id}: Starting main server functionality after election")
         self.run_funcs()
+
+        # Notify all clients about the new server
+        self.notify_clients_new_server()
+
+    def notify_clients_new_server(self):
+        PORT = 52000
+        for key, client_info in self.local_clients_cache.items():
+            try:
+                client_addr = client_info['addr'][0]
+                print(f"{self.server_id}: Notifying client at {client_addr} about new server")
+                server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                server_socket.connect((client_addr, PORT))
+                # Send both server address and notification
+                message = f"SERVER_CHANGE|{self.server_address}"
+                server_socket.sendall(message.encode('utf-8'))
+                server_socket.close()
+                print(f"{self.server_id}: Successfully notified client at {client_addr}")
+            except Exception as e:
+                print(f"{self.server_id}: Failed to notify client at {client_addr}: {e}")
+
+    def receive_new_server(self):
+        PORT = 52000
+        try:
+            client_receive_message_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client_receive_message_socket.bind((self.client_address, PORT))
+            client_receive_message_socket.listen()
+
+            print("Client: Listening for server address update messages")
+
+            while True:
+                try:
+                    connection, addr = client_receive_message_socket.accept()
+                    message = connection.recv(1024).decode('utf-8')
+                    
+                    if message.startswith("SERVER_CHANGE"):
+                        _, new_server = message.split("|")
+                        print(f"Client: Switching to new server: {new_server}")
+                        self.registered_server_address = new_server
+                        # Re-establish connection with new server
+                        self.auto_join()
+                except Exception as e:
+                    print(f"Error receiving server update: {e}")
+        except Exception as e:
+            print(f"Error setting up server update listener: {e}")
 
     def stop_threads(self):
         self.keep_running_nonLeader = False

@@ -2,6 +2,7 @@ import multiprocessing
 import socket
 import threading
 import re
+import time
 
 class Client(multiprocessing.Process):
 
@@ -43,23 +44,50 @@ class Client(multiprocessing.Process):
 
     def auto_join(self):
         PORT = 49153
-        # Modify the join message to be a clear format
-        join_message = f"join|MAIN_CHAT|{self.username}"  # Using | as separator instead of _
-        MSG = join_message.encode('utf-8')
-
-        broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        broadcast_socket.sendto(MSG, ('<broadcast>', PORT))
+        retries = 3
         
-        data, server = broadcast_socket.recvfrom(1024)
-        print('Client: Connected to chat server')
+        while retries > 0:
+            try:
+                # Include username in the join message
+                join_message = f"join|MAIN_CHAT|{self.username}"
+                MSG = join_message.encode('utf-8')
 
-        ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
-        matches = re.findall(ip_pattern, data.decode('utf-8'))
-        self.registered_server_address = matches[1]
-        print(f"Client: Connected as {self.username}")
-        print(f"Client: Connected to server: {self.registered_server_address}")
-        broadcast_socket.close()
+                broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                broadcast_socket.settimeout(5)
+                broadcast_socket.sendto(MSG, ('<broadcast>', PORT))
+                
+                data, server = broadcast_socket.recvfrom(1024)
+                
+                ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
+                matches = re.findall(ip_pattern, data.decode('utf-8'))
+                self.registered_server_address = matches[1]
+                print(f"Client: Connected as {self.username}")
+                print(f"Client: Connected to server: {self.registered_server_address}")
+                broadcast_socket.close()
+                return True
+                
+            except socket.timeout:
+                retries -= 1
+                if retries > 0:
+                    print(f"Connection failed. Retrying... ({retries} attempts left)")
+                    time.sleep(2)
+                else:
+                    print("Unable to connect to any server after multiple attempts")
+                    return False
+            except Exception as e:
+                print(f"Error in auto_join: {e}")
+                retries -= 1
+                if retries > 0:
+                    print(f"Retrying... ({retries} attempts left)")
+                    time.sleep(2)
+                else:
+                    return False
+            finally:
+                try:
+                    broadcast_socket.close()
+                except:
+                    pass
                 
 
     def register(self, message_type, message_group):
@@ -105,20 +133,34 @@ class Client(multiprocessing.Process):
                     print("Client: Shutting down chat client")
                     break
 
-                try:
-                    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    client_socket.settimeout(5)
-                    client_socket.connect((self.registered_server_address, PORT))
-                    # Send message with username
-                    full_message = f"{self.username}|{message}"
-                    client_socket.sendall(full_message.encode('utf-8'))
-                    client_socket.close()
-                except ConnectionRefusedError:
-                    print("Unable to connect to server. Server might be down or unreachable.")
-                except socket.timeout:
-                    print("Connection attempt timed out. Server might be busy.")
-                except Exception as e:
-                    print(f"Error sending message: {e}")
+                retries = 3
+                while retries > 0:
+                    try:
+                        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        client_socket.settimeout(5)
+                        client_socket.connect((self.registered_server_address, PORT))
+                        
+                        # Send message with username
+                        full_message = f"{self.username}|{message}"
+                        client_socket.sendall(full_message.encode('utf-8'))
+                        client_socket.close()
+                        break  # Success, exit retry loop
+                        
+                    except (ConnectionRefusedError, socket.timeout):
+                        retries -= 1
+                        if retries > 0:
+                            print(f"Connection failed. Retrying... ({retries} attempts left)")
+                            time.sleep(2)  # Wait before retry
+                        else:
+                            print("Server appears to be down. Waiting for new server notification...")
+                    except Exception as e:
+                        print(f"Error sending message: {e}")
+                        break
+                    finally:
+                        try:
+                            client_socket.close()
+                        except:
+                            pass
 
             except Exception as e:
                 print(f"Error in message input: {e}")

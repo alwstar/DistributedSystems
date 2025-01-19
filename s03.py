@@ -28,13 +28,15 @@ ring_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 ring_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
 class Server(multiprocessing.Process):
-    client_cache_key_offset = 0
-    local_servers_cache = dict()
-    local_clients_cache = dict()
-    local_group_cache = dict()
-
     def __init__(self):
         super(Server, self).__init__()
+        # Initialize caches
+        self.local_servers_cache = dict()
+        self.local_clients_cache = dict()
+        self.local_group_cache = dict()
+        self.client_cache_key_offset = 0
+
+        # Rest of initialization
         self.os = self.get_os_type()
         print("Server running on OS: ", self.os)
         self.active_interface = self.get_active_interface()
@@ -53,8 +55,12 @@ class Server(multiprocessing.Process):
         self.participant = False
         self.keep_running_nonLeader = True
         self.is_admin_of_groupchat = False
-        if self.server_id == "MAIN":
-            self.local_group_cache["MAIN_CHAT"] = "MAIN"
+        
+        # Initialize with MAIN server ID
+        self.server_id = "MAIN"
+        
+        # Initialize the single chat group
+        self.local_group_cache["MAIN_CHAT"] = "MAIN"
         print("Server initialized with default chat group MAIN_CHAT")
 
     @staticmethod
@@ -129,7 +135,7 @@ class Server(multiprocessing.Process):
     
     def run(self):
         print("I'm alive")
-
+        
         # Get the broadcast address from the existing server_instance
         broadcast_address = self.broadcast_address   
         if broadcast_address is None:
@@ -149,7 +155,7 @@ class Server(multiprocessing.Process):
 
         received_response = False
 
-        # try 5 times to find the MAIN server, otherwise declares as new MAIN
+        # try 5 times to find the MAIN server, otherwise remains as MAIN
         for i in range(0,5):
             print("Trying to find other servers...")
         
@@ -163,7 +169,6 @@ class Server(multiprocessing.Process):
                 message, server = broadcast_socket.recvfrom(1024)
                 server_response = message.decode('utf-8')
             except socket.timeout:
-                #print("No answer from MAIN server")
                 pass
             else:
                 if server_response:
@@ -175,10 +180,10 @@ class Server(multiprocessing.Process):
                     break
         
         broadcast_socket.close()
-        # no response from MAIN server? declare as new MAIN server
+        
         if not received_response:
-            print("No other server was found, declare as MAIN server.")
-            self.server_id = "MAIN"
+            # We keep our initial MAIN server_id
+            print("No other server was found, continuing as MAIN server.")
             self.run_funcs()
 
     def run_funcs(self):

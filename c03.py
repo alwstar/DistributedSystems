@@ -55,18 +55,22 @@ class Client(multiprocessing.Process):
                 broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                 broadcast_socket.settimeout(5)
+                
+                print(f"Client: Attempting to join with server (attempt {4-retries}/3)")
                 broadcast_socket.sendto(MSG, ('<broadcast>', PORT))
                 
                 data, server = broadcast_socket.recvfrom(1024)
                 
                 ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
                 matches = re.findall(ip_pattern, data.decode('utf-8'))
-                self.registered_server_address = matches[1]
-                print(f"Client: Connected as {self.username}")
-                print(f"Client: Connected to server: {self.registered_server_address}")
-                broadcast_socket.close()
-                return True
-                
+                if matches:
+                    self.registered_server_address = matches[1]
+                    print(f"Client: Successfully reconnected as {self.username}")
+                    print(f"Client: Connected to server: {self.registered_server_address}")
+                    return True
+                else:
+                    print("Client: Failed to extract server address from response")
+                    
             except socket.timeout:
                 retries -= 1
                 if retries > 0:
@@ -182,15 +186,30 @@ class Client(multiprocessing.Process):
 
     def receive_new_server(self):
         PORT = 52000
+        try:
+            client_receive_message_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client_receive_message_socket.bind((self.client_address, PORT))
+            client_receive_message_socket.listen()
 
-        client_receive_message_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client_receive_message_socket.bind((self.client_address, PORT))
-        client_receive_message_socket.listen()
+            print("Client: Listening for server address update messages")
 
-        print("Client: Listening for server address update messages")
-
-        while True:
-            connection, addr = client_receive_message_socket.accept()
-            message = connection.recv(1024)
-            print(f"Client: New server: {message.decode('utf-8')}")
-            self.registered_server_address = message.decode('utf-8')
+            while True:
+                try:
+                    connection, addr = client_receive_message_socket.accept()
+                    new_server = connection.recv(1024).decode('utf-8')
+                    print(f"Client: Switching to new server: {new_server}")
+                    self.registered_server_address = new_server
+                    
+                    # Try to re-establish connection with new server
+                    print(f"Client: Attempting to reconnect to new server at {new_server}")
+                    self.auto_join()
+                    
+                except Exception as e:
+                    print(f"Error receiving server update: {e}")
+                finally:
+                    try:
+                        connection.close()
+                    except:
+                        pass
+        except Exception as e:
+            print(f"Error setting up server update listener: {e}")

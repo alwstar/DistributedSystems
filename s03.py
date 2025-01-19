@@ -889,10 +889,10 @@ class Server(multiprocessing.Process):
                 client_addr = client_info['addr'][0]
                 print(f"{self.server_id}: Notifying client at {client_addr} about new server")
                 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                server_socket.settimeout(5)  # Add timeout
                 server_socket.connect((client_addr, PORT))
-                # Send both server address and notification
-                message = f"SERVER_CHANGE|{self.server_address}"
-                server_socket.sendall(message.encode('utf-8'))
+                # Send new server address directly
+                server_socket.sendall(self.server_address.encode('utf-8'))
                 server_socket.close()
                 print(f"{self.server_id}: Successfully notified client at {client_addr}")
             except Exception as e:

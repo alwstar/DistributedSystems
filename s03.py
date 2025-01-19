@@ -367,14 +367,14 @@ class Server(multiprocessing.Process):
     
     # find highest server ID in cache
     def get_last_server_id(self):      
-        if self.local_group_cache:
-            return ord(max(self.local_group_cache, key=lambda k: ord(k)))
-        else:
-            # ascii value before A
-            return 64
+        # Get all server IDs from the servers cache
+        if self.local_servers_cache:
+            server_ids = [id for id in self.local_servers_cache.keys() if len(id) == 1]
+            if server_ids:
+                return ord(max(server_ids))
         
-    def register_server(self):
-        return
+        # If no servers or only MAIN exists, return ascii value before 'A'
+        return 64  # ASCII value before 'A'
 
     # listen for servers if they want to join the DS
     def listen_for_servers(self):

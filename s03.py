@@ -669,39 +669,60 @@ class Server(multiprocessing.Process):
 
     # determine the receiver list of the received client chat message
     def distribute_chat_message(self, message, addr):
-        group = self.find_group_of_client(addr)
+        try:
+            group = "MAIN_CHAT"  # We know it's always MAIN_CHAT now
+            receiver_list = []
+            sender = None  # Initialize sender variable
 
-        receiver_list = []
-
-        for key in self.local_clients_cache:
-            if group in key:
-                if addr[0] != self.local_clients_cache[key][0]:
-                    if self.local_clients_cache[key][0] not in receiver_list:
-                        receiver_list.append(self.local_clients_cache[key][0])
-                        print(self.server_id+": "+"Group receiver list "+str(receiver_list))
-                elif addr[0] == self.local_clients_cache[key][0]:
+            # First find the sender's ID
+            for key, client_addr in self.local_clients_cache.items():
+                if client_addr[0] == addr[0]:
                     sender = key
+                    break
+            
+            if not sender:
+                print(f"{self.server_id}: Could not find sender ID for address {addr[0]}")
+                return
 
-        distribute_chat_thread = threading.Thread(target=self.send_chat_message_to_clients(message, receiver_list, sender))
-        distribute_chat_thread.start()
+            # Then build the receiver list
+            for key, client_addr in self.local_clients_cache.items():
+                if group in key and client_addr[0] != addr[0]:
+                    receiver_list.append(client_addr[0])
+
+            if receiver_list:
+                print(f"{self.server_id}: Distributing message to {len(receiver_list)} clients")
+                self.send_chat_message_to_clients(message, receiver_list, sender)
+            else:
+                print(f"{self.server_id}: No other clients to send message to")
+                
+        except Exception as e:
+            print(f"Error in distribute_chat_message: {e}")
 
     # distribute the received client chat message to all members of the group
     def send_chat_message_to_clients(self, message, receiver_list, sender):
-
         PORT = 51000
 
-        decoded_message = message.decode('utf-8')
-        new_message = sender + ": " + decoded_message
-        encoded_message = new_message.encode('utf-8')
+        try:
+            decoded_message = message.decode('utf-8')
+            new_message = f"{sender}: {decoded_message}"
+            print(f"{self.server_id}: Preparing to send: {new_message}")
+            encoded_message = new_message.encode('utf-8')
 
-        for client in receiver_list:
-            try:
-                server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                server_socket.connect((client, PORT))
-                server_socket.sendall(encoded_message)
-                server_socket.close()
-            except (ConnectionRefusedError, TimeoutError):
-                print(f'Unable to send to {client}')           
+            for client in receiver_list:
+                try:
+                    print(f"{self.server_id}: Attempting to send to {client}:{PORT}")
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+                        server_socket.settimeout(5)
+                        server_socket.connect((client, PORT))
+                        server_socket.sendall(encoded_message)
+                        print(f"{self.server_id}: Successfully sent to {client}")
+                except (ConnectionRefusedError, TimeoutError) as e:
+                    print(f'{self.server_id}: Unable to send to {client}: {e}')
+                except Exception as e:
+                    print(f'{self.server_id}: Error sending to {client}: {e}')
+                    
+        except Exception as e:
+            print(f"{self.server_id}: Error in send_chat_message_to_clients: {e}")        
 
     def start_leader_election(self):
         #Reset last heartbeat timestamp

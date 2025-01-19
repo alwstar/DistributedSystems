@@ -450,20 +450,22 @@ class Server(multiprocessing.Process):
             try:
                 data, addr = listen_socket.recvfrom(1024)
                 if data:
-                    print(f"{self.server_id}: New client connected from {addr}")
-                    
-                    # Store complete address tuple
-                    self.handle_client_join(addr)
-                    print(f"{self.server_id}: Client cache after join: {self.local_clients_cache}")
-                    
-                    update_cache_thread = threading.Thread(target=self.updateCacheList)
-                    update_cache_thread.start()
+                    message = data.decode('utf-8')
+                    parts = message.split('_')
+                    if len(parts) >= 3 and parts[0] == 'join':
+                        username = parts[2]
+                        print(f"{self.server_id}: New client {username} connected from {addr}")
+                        self.handle_client_join(addr, username)
+                        print(f"{self.server_id}: Client cache after join: {self.local_clients_cache}")
+                        
+                        update_cache_thread = threading.Thread(target=self.updateCacheList)
+                        update_cache_thread.start()
             except Exception as e:
                 print(f"Error in listen_for_clients: {e}")
                 import traceback
                 print(traceback.format_exc())
                 
-    def handle_client_join(self, client_addr):
+    def handle_client_join(self, client_addr, username):
         try:
             server_addr = self.server_address
             self.send_reply_to_client(server_addr, client_addr)
@@ -472,10 +474,13 @@ class Server(multiprocessing.Process):
             self.client_counter += 1
             client_cache_key = f"MAIN_CHAT{self.client_counter}"
             
-            # Store the complete address tuple
-            self.local_clients_cache[client_cache_key] = client_addr
+            # Store both address and username
+            self.local_clients_cache[client_cache_key] = {
+                'addr': client_addr,
+                'username': username
+            }
             
-            print(f"{self.server_id}: Added client to MAIN_CHAT group with key {client_cache_key}")
+            print(f"{self.server_id}: Added client {username} to MAIN_CHAT group with key {client_cache_key}")
             print(f"{self.server_id}: Current cache: {self.local_clients_cache}")
         except Exception as e:
             print(f"Error in handle_client_join: {e}")
@@ -688,17 +693,19 @@ class Server(multiprocessing.Process):
         try:
             group = "MAIN_CHAT"  # We know it's always MAIN_CHAT now
             receiver_list = []
-            sender = None  # Initialize sender variable
+            sender = None
+            sender_username = None
 
             print(f"{self.server_id}: Current client cache before distribution: {self.local_clients_cache}")
             print(f"{self.server_id}: Looking for sender with address {addr[0]}")
 
-            # First find the sender's ID
-            for key, client_addr in self.local_clients_cache.items():
-                print(f"{self.server_id}: Comparing with {key}: {client_addr[0]}")
-                if client_addr[0] == addr[0]:
+            # First find the sender's ID and username
+            for key, client_info in self.local_clients_cache.items():
+                print(f"{self.server_id}: Comparing with {key}: {client_info['addr'][0]}")
+                if client_info['addr'][0] == addr[0]:
                     sender = key
-                    print(f"{self.server_id}: Found sender: {sender}")
+                    sender_username = client_info['username']
+                    print(f"{self.server_id}: Found sender: {sender} ({sender_username})")
                     break
             
             if not sender:
@@ -706,14 +713,14 @@ class Server(multiprocessing.Process):
                 return
 
             # Then build the receiver list
-            for key, client_addr in self.local_clients_cache.items():
-                if group in key and client_addr[0] != addr[0]:
-                    receiver_list.append(client_addr[0])
-                    print(f"{self.server_id}: Added {client_addr[0]} to receiver list")
+            for key, client_info in self.local_clients_cache.items():
+                if group in key and client_info['addr'][0] != addr[0]:
+                    receiver_list.append(client_info['addr'][0])
+                    print(f"{self.server_id}: Added {client_info['addr'][0]} to receiver list")
 
             if receiver_list:
                 print(f"{self.server_id}: Distributing message to clients: {receiver_list}")
-                self.send_chat_message_to_clients(message, receiver_list, sender)
+                self.send_chat_message_to_clients(message, receiver_list, sender_username)
             else:
                 print(f"{self.server_id}: No other clients to send message to. Cache: {self.local_clients_cache}")
                 

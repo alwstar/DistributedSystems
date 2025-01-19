@@ -609,26 +609,51 @@ class Server(multiprocessing.Process):
     def listen_for_client_messages(self):
 
         PORT = 50001
-
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.bind((self.server_address, PORT))
-        server_socket.listen()
-
-        print(self.server_id+": "+"Group-chat server is listening for client messages at port: ", PORT)
-
-        while True:
-            connection, addr = server_socket.accept()
-
-            message = connection.recv(1024)
+        
+        try:
+            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             
-            print(self.server_id+": "+"Received message from client: "+message.decode('utf-8'))
+            # Print binding attempt
+            print(f"{self.server_id}: Attempting to bind to {self.server_address}:{PORT}")
+            server_socket.bind((self.server_address, PORT))
+            print(f"{self.server_id}: Successfully bound to {self.server_address}:{PORT}")
+            
+            server_socket.listen(5)
+            print(f"{self.server_id}: Socket is now listening for incoming connections")
 
-            #response = "Hello, client! I received your message."
-            #connection.sendall(bytes(response, 'utf-8'))
-            connection.close()
+            print(f"{self.server_id}: Group-chat server is listening for client messages at {self.server_address}:{PORT}")
 
-            if message:
-                self.distribute_chat_message(message, addr)
+            while True:
+                try:
+                    print(f"{self.server_id}: Waiting for new connection...")
+                    connection, addr = server_socket.accept()
+                    print(f"{self.server_id}: New connection accepted from {addr}")
+                    connection.settimeout(5)
+                    
+                    try:
+                        message = connection.recv(1024)
+                        if message:
+                            print(f"{self.server_id}: Received message from client {addr}: {message.decode('utf-8')}")
+                            self.distribute_chat_message(message, addr)
+                    except socket.timeout:
+                        print(f"Timeout receiving message from {addr}")
+                    except Exception as e:
+                        print(f"Error receiving message from {addr}: {e}")
+                    finally:
+                        connection.close()
+                        print(f"{self.server_id}: Connection closed with {addr}")
+                        
+                except Exception as e:
+                    print(f"Error accepting connection: {e}")
+                    time.sleep(1)
+                    
+        except Exception as e:
+            print(f"Error setting up message listener: {e}")
+            print(f"Details: {type(e).__name__}: {str(e)}")
+        finally:
+            server_socket.close()
+            print(f"{self.server_id}: Server socket closed")
 
     # determine the receiver list of the received client chat message
     def distribute_chat_message(self, message, addr):

@@ -526,39 +526,42 @@ class Server(multiprocessing.Process):
 
     # send updated group view/servers cache to all server
     def updateCacheList(self):
-        PORT = 5980
-        BROADCAST_ADDRESS = self.broadcast_address
-        servers_cache_as_string = json.dumps(self.local_servers_cache, indent=2).encode('utf-8')
-        clients_cache_as_string = json.dumps(self.local_clients_cache, indent=2).encode('utf-8')
-        group_cache_as_string = json.dumps(self.local_group_cache, indent=2).encode('utf-8')
-        separator = "_"
+        try:
+            PORT = 5980
+            BROADCAST_ADDRESS = self.broadcast_address
 
-        MSG = servers_cache_as_string + separator.encode('utf-8') + clients_cache_as_string + separator.encode('utf-8') + group_cache_as_string
-        broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        time.sleep(2)
+            # Create proper JSON strings with double quotes
+            servers_cache_json = json.dumps(self.local_servers_cache)
+            clients_cache_json = json.dumps(self.local_clients_cache)
+            group_cache_json = json.dumps(self.local_group_cache)
+            
+            # Use a different separator that won't appear in JSON
+            separator = "|||"
 
-        if self.os == "macOS":
-            broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            broadcast_socket.sendto(MSG, (BROADCAST_ADDRESS, PORT))
-            print("broadcast sent to", BROADCAST_ADDRESS, PORT, "with message", MSG)
-        else:
-            broadcast_socket.sendto(MSG, (BROADCAST_ADDRESS, PORT))
-        broadcast_socket.close()
+            MSG = f"{servers_cache_json}{separator}{clients_cache_json}{separator}{group_cache_json}"
+            
+            broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            time.sleep(2)
+
+            if self.os == "macOS":
+                broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            
+            broadcast_socket.sendto(MSG.encode('utf-8'), (BROADCAST_ADDRESS, PORT))
+            print(f"{self.server_id}: Cache update broadcast sent")
+            
+        except Exception as e:
+            print(f"Error in updateCacheList: {e}")
+        finally:
+            broadcast_socket.close()
 
     # listen for update of the groupview/server cache by MAIN server
     def listen_for_cache_update(self):
         BROADCAST_ADDRESS = self.broadcast_address
         BROADCAST_PORT = 5980
 
-        # Local host information
-        # MY_HOST = socket.gethostname()
-        # MY_IP = socket.gethostbyname(MY_HOST)
-
-        # Create a UDP socket
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Set the socket to broadcast and enable reusing addresses
         listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
@@ -568,27 +571,38 @@ class Server(multiprocessing.Process):
         else:
             listen_socket.bind(('', BROADCAST_PORT))
 
-        print(self.server_id+": "+"Listening to cache update broadcast messages")
+        print(f"{self.server_id}: Listening to cache update broadcast messages")
 
         while self.keep_running_nonLeader == True:
             try:
                 data, addr = listen_socket.recvfrom(1024)
                 if data:
                     message = data.decode('utf-8')
-                    print(self.server_id+": "+"Received cache update broadcast message:")
-                    splitted = message.split("_")
-                    server_cache_json = json.loads(splitted[0])
-                    client_cache_json = json.loads(splitted[1])
-                    group_cache_json = json.loads(splitted[2])
-                    self.local_servers_cache = server_cache_json
-                    self.local_clients_cache = client_cache_json
-                    self.local_group_cache = group_cache_json
-                    print("Group Cache:  ", self.local_group_cache)
-                    print("Server Cache: ", self.local_servers_cache)
-                    print("Client Cache: ", self.local_clients_cache)
-            except socket.timeout:
-                pass #Timeout reached
-
+                    print(f"{self.server_id}: Received cache update broadcast message")
+                    
+                    # Split using the new separator
+                    splitted = message.split("|||")
+                    
+                    if len(splitted) == 3:
+                        try:
+                            server_cache_json = json.loads(splitted[0])
+                            client_cache_json = json.loads(splitted[1])
+                            group_cache_json = json.loads(splitted[2])
+                            
+                            self.local_servers_cache = server_cache_json
+                            self.local_clients_cache = client_cache_json
+                            self.local_group_cache = group_cache_json
+                            
+                            print(f"{self.server_id}: Cache updated successfully")
+                        except json.JSONDecodeError as e:
+                            print(f"Error decoding JSON: {e}")
+                    else:
+                        print(f"Invalid message format: expected 3 parts, got {len(splitted)}")
+                        
+            except Exception as e:
+                print(f"Error in listen_for_cache_update: {e}")
+                time.sleep(1)  # Add small delay to prevent tight loop
+                
     # listen for client chat messages to distribute them to all group members afterwards
     def listen_for_client_messages(self):
 
@@ -730,44 +744,42 @@ class Server(multiprocessing.Process):
         participant = p
     
     def leader_election(self):
-        self.local_servers_cache = Server.local_servers_cache
-        #ring_socket.bind((self.server_address, leader_election_port))  # Bind to the server's IP and leader election port
+        # Remove the reference to Server.local_servers_cache
         while self.keep_running_nonLeader == True:
-            # Receive election messages from neighbors.
-            #print(self.ring_socket)
-            data, address = self.ring_socket.recvfrom(4096)
-            #Reset last heartbeat timestamp
-            self.last_heartbeat_timestamp = None
-            if data:
-                election_message = json.loads(data.decode())
-                received_id = election_message.get('id')
-                received_isLeader = election_message.get('isLeader')
-                print("Received UUID:", received_id)
-                print("Own UUID:", self.server_uuid)
-                print("Received isLeader:", received_isLeader)
-                if received_isLeader == False:
-                    # Logic to handle the election process based on the received UUID.
-                    if not self.participant:
-                        # Forward the message to the next server in the ring.
-                        neighbor_info = self.get_neighbour('right')
-                        print("got neighbor", neighbor_info)
-                        if neighbor_info:
-                            self.send_election_message(neighbor_info['server_address'], received_id, received_isLeader)
-                    self.participant = True
-                elif received_isLeader == True:
-                    if received_id == self.server_uuid:
-                        self.handle_leader_tasks()
-                    elif received_id > self.server_uuid:
-                        # Agree to leader
-                        neighbor_info = self.get_neighbour('right')
-                        print("got neighbor", neighbor_info)
-                        if neighbor_info:
-                            self.send_election_message(neighbor_info['server_address'], received_id, received_isLeader)
+            try:
+                data, address = self.ring_socket.recvfrom(4096)
+                # Reset last heartbeat timestamp
+                self.last_heartbeat_timestamp = None
+                if data:
+                    election_message = json.loads(data.decode())
+                    received_id = election_message.get('id')
+                    received_isLeader = election_message.get('isLeader')
+                    print("Received UUID:", received_id)
+                    print("Own UUID:", self.server_uuid)
+                    print("Received isLeader:", received_isLeader)
+                    if received_isLeader == False:
+                        if not self.participant:
+                            neighbor_info = self.get_neighbour('right')
+                            print("got neighbor", neighbor_info)
+                            if neighbor_info:
+                                self.send_election_message(neighbor_info['server_address'], received_id, received_isLeader)
+                        self.participant = True
+                    elif received_isLeader == True:
+                        if received_id == self.server_uuid:
+                            self.handle_leader_tasks()
+                        elif received_id > self.server_uuid:
+                            neighbor_info = self.get_neighbour('right')
+                            print("got neighbor", neighbor_info)
+                            if neighbor_info:
+                                self.send_election_message(neighbor_info['server_address'], received_id, received_isLeader)
+                        else:
+                            print("Failed")
+                        self.participant = False
                     else:
-                        print("Failed")
-                    self.participant = False
-                else:
-                    print("Leader Election failed")
+                        print("Leader Election failed")
+            except Exception as e:
+                print(f"Error in leader election: {e}")
+                time.sleep(1)  # Add small delay to prevent tight loop
 
 
     def declare_victory(self):

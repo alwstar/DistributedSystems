@@ -16,6 +16,7 @@ server_heartbeat_tcp_listener_port = 49160
 
 client_receive_chat_tcp_port = 50001
 client_forward_message_multicast_port = 51000
+server_new_server_port = 52000
 
 leader_election_port = 49161
 
@@ -28,13 +29,15 @@ ring_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 ring_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
 class Server(multiprocessing.Process):
-    client_cache_key_offset = 0
-    local_servers_cache = dict()
-    local_clients_cache = dict()
-    local_group_cache = dict()
-
     def __init__(self):
         super(Server, self).__init__()
+        # Initialize caches
+        self.local_servers_cache = dict()
+        self.local_clients_cache = dict()
+        self.local_group_cache = dict()
+        self.client_counter = 0  # Global counter for all clients
+
+        # Rest of initialization
         self.os = self.get_os_type()
         print("Server running on OS: ", self.os)
         self.active_interface = self.get_active_interface()
@@ -53,6 +56,13 @@ class Server(multiprocessing.Process):
         self.participant = False
         self.keep_running_nonLeader = True
         self.is_admin_of_groupchat = False
+        
+        # Initialize with LEADER server ID
+        self.server_id = "LEADER"
+        
+        # Initialize the single chat group
+        self.local_group_cache["MAIN_CHAT"] = "MAIN"
+        print("Server initialized with default chat group MAIN_CHAT")
 
     @staticmethod
     def get_local_ip_address():
@@ -126,7 +136,7 @@ class Server(multiprocessing.Process):
     
     def run(self):
         print("I'm alive")
-
+        
         # Get the broadcast address from the existing server_instance
         broadcast_address = self.broadcast_address   
         if broadcast_address is None:
@@ -136,8 +146,8 @@ class Server(multiprocessing.Process):
         # determine the os type
         os = self.get_os_type()
 
-        BROADCAST_PORT = 49154     
-        MSG = bytes("HI MAIN SERVER", 'utf-8')
+        BROADCAST_PORT = server_broadcast_listener_port     
+        MSG = bytes("HI LEADER SERVER", 'utf-8')
 
         broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -146,7 +156,7 @@ class Server(multiprocessing.Process):
 
         received_response = False
 
-        # try 5 times to find the MAIN server, otherwise declares as new MAIN
+        # try 5 times to find the LEADER server, otherwise remains as LEADER
         for i in range(0,5):
             print("Trying to find other servers...")
         
@@ -160,48 +170,52 @@ class Server(multiprocessing.Process):
                 message, server = broadcast_socket.recvfrom(1024)
                 server_response = message.decode('utf-8')
             except socket.timeout:
-                #print("No answer from MAIN server")
                 pass
             else:
                 if server_response:
                     match = re.search(r'\b([A-Za-z])\b$', message.decode('utf-8'))
                     self.server_id = match.group(1)
-                    print('Received message from MAIN server: ', message.decode('utf-8'))
+                    print('Received message from LEADER server: ', message.decode('utf-8'))
                     received_response = True
                     self.run_funcs()
                     break
         
         broadcast_socket.close()
-        # no response from MAIN server? declare as new MAIN server
+        
         if not received_response:
-            print("No other server was found, declare as MAIN server.")
-            self.server_id = "MAIN"
+            # We keep our initial LEADER server_id
+            print("No other server was found, continuing as LEADER server.")
             self.run_funcs()
 
     def run_funcs(self):
-        #print(self.server_id+": "+"Up and running")
-        if self.server_id == "MAIN":
-            client_listener_thread = threading.Thread(target=self.listen_for_clients)
-            client_listener_thread.start()
-
-            server_listener_thread = threading.Thread(target=self.listen_for_servers)
-            server_listener_thread.start()
+        if self.server_id == "LEADER":
+            print(f"{self.server_id}: Starting LEADER server functions...")
             
+            client_listener_thread = threading.Thread(target=self.listen_for_clients)
+            server_listener_thread = threading.Thread(target=self.listen_for_servers)
             heartbeat_send_thread = threading.Thread(target=self.send_heartbeat)
+            message_listener_thread = threading.Thread(target=self.listen_for_client_messages)
+            
+            client_listener_thread.start()
+            server_listener_thread.start()
             heartbeat_send_thread.start()
-        
+            message_listener_thread.start()
+            
+            print(f"{self.server_id}: All server threads started")
         else:
             self.cache_update_listener_thread = threading.Thread(target=self.listen_for_cache_update)
             self.heartbeat_receive_thread = threading.Thread(target=self.listen_for_heartbeats)
             self.heartbeat_timeout_thread = threading.Thread(target=self.check_heartbeat_timeout)
             self.leader_election_thread = threading.Thread(target=self.leader_election)
+            self.client_message_listener_thread = threading.Thread(target=self.listen_for_client_messages)
 
             self.cache_update_listener_thread.start()
             self.heartbeat_receive_thread.start()
             self.heartbeat_timeout_thread.start()
             self.leader_election_thread.start()
+            self.client_message_listener_thread.start()
 
-            self.start_listen_client_messages()
+            self.is_admin_of_groupchat = True
     
     def start_listen_client_messages(self):
 
@@ -295,7 +309,7 @@ class Server(multiprocessing.Process):
             except socket.error as e:
                 print(f"Error: {e}")
 
-    # find every group where the dead server was admin and reassign group to (new) MAIN server
+    # find every group where the dead server was admin and reassign group to (new) LEADER server
     def reassign_chat_groups(self, dead_server_id):
         
         reassigned_groups = []
@@ -329,7 +343,7 @@ class Server(multiprocessing.Process):
 
     # inform clients about the address of their new groupchat server
     def send_client_new_group_server_address(self, addr, clients_to_inform):
-        PORT = 52000
+        PORT = server_new_server_port
 
         for client in clients_to_inform: 
             client_addr = self.local_clients_cache[client]
@@ -359,19 +373,19 @@ class Server(multiprocessing.Process):
     
     # find highest server ID in cache
     def get_last_server_id(self):      
-        if self.local_group_cache:
-            return ord(max(self.local_group_cache, key=lambda k: ord(k)))
-        else:
-            # ascii value before A
-            return 64
+        # Get all server IDs from the servers cache
+        if self.local_servers_cache:
+            server_ids = [id for id in self.local_servers_cache.keys() if len(id) == 1]
+            if server_ids:
+                return ord(max(server_ids))
         
-    def register_server(self):
-        return
+        # If no servers or only LEADER exists, return ascii value before 'A'
+        return 64  # ASCII value before 'A'
 
     # listen for servers if they want to join the DS
     def listen_for_servers(self):
 
-        BROADCAST_PORT = 49154
+        BROADCAST_PORT = server_broadcast_listener_port
         BROADCAST_ADDRESS = self.broadcast_address
 
         # Create a UDP socket
@@ -418,58 +432,77 @@ class Server(multiprocessing.Process):
         server_socket.close()
 
     def listen_for_clients(self):
-        
-        BROADCAST_PORT = 49153
+        BROADCAST_PORT = client_broadcast_listener_port
         BROADCAST_ADDRESS = self.broadcast_address
 
-        # Create a UDP socket
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Set the socket to broadcast and enable reusing addresses
         listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        
         if self.os == "macOS":
             listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
             listen_socket.bind((BROADCAST_ADDRESS, BROADCAST_PORT))
         else:
             listen_socket.bind(('', BROADCAST_PORT))
 
-        print(self.server_id+": "+"Listening to client register broadcast messages")
+        print(f"{self.server_id}: Listening for client connections")
 
         while True:
-            data, addr = listen_socket.recvfrom(1024)
-            if data:
-                message = data.decode('utf-8')
-                print(self.server_id+": "+"Received client register broadcast message:", message)
-                splitted = message.split("_")
-                if (splitted[0] == 'register'):
-                    #self.register_client(splitted[1].upper(), addr)
-                    self.register_client(splitted[1].upper(), addr)
-
-                    update_cache_thread = threading.Thread(target=self.updateCacheList)
-                    if update_cache_thread.is_alive:
-                        update_cache_thread.run()
-                    else:
+            try:
+                data, addr = listen_socket.recvfrom(1024)
+                if data:
+                    message = data.decode('utf-8')
+                    parts = message.split('|')  # Using | as separator
+                    if len(parts) >= 3 and parts[0] == 'join':
+                        username = parts[2]
+                        print(f"{self.server_id}: New client {username} connected from {addr}")
+                        self.handle_client_join(addr, username)
+                        print(f"{self.server_id}: Client cache after join: {self.local_clients_cache}")
+                        
+                        update_cache_thread = threading.Thread(target=self.updateCacheList)
                         update_cache_thread.start()
+            except Exception as e:
+                print(f"Error in listen_for_clients: {e}")
+                
+    def handle_client_join(self, client_addr, username):
+        try:
+            server_addr = self.server_address
+            self.send_reply_to_client(server_addr, client_addr)
+
+            # Increment global counter
+            self.client_counter += 1
+            client_cache_key = f"MAIN_CHAT{self.client_counter}"
+            
+            # Store both address and username
+            self.local_clients_cache[client_cache_key] = {
+                'addr': client_addr,
+                'username': username
+            }
+            
+            print(f"{self.server_id}: Added client {username} to MAIN_CHAT group with key {client_cache_key}")
+            print(f"{self.server_id}: Current cache: {self.local_clients_cache}")
+        except Exception as e:
+            print(f"Error in handle_client_join: {e}")
+            import traceback
+            print(traceback.format_exc())
                         
 
     # Register client. Check if chatgroup exists, if yes answer client with chatgroup server IP   
     def register_client(self, group, client_addr):
-       
-        if group not in self.local_group_cache:
-            print(self.server_id+": "+"Group "+group+" doesn't exist.")
+        # Since we only have one group, we can simplify this function
+        if group != "MAIN_CHAT":
+            print(self.server_id + ": Only MAIN_CHAT group is available")
             self.send_negative_reply_to_client(client_addr)
-    
-        else:
-            print(self.server_id+": "+"Group "+group+" exists")
+            return
 
+        server_addr = self.server_address
+        self.send_reply_to_client(server_addr, client_addr)
 
-            server_addr = self.find_groupchat_server_addresse(group)
-            self.send_reply_to_client(server_addr, client_addr)
-
-            client_count = self.filter_clients(group)
-            self.client_cache_key_offset = client_count + 1
-            client_cache_key = group + str(self.client_cache_key_offset)
-            self.local_clients_cache[client_cache_key] = client_addr
+        client_count = self.filter_clients(group)
+        self.client_cache_key_offset = client_count + 1
+        client_cache_key = group + str(self.client_cache_key_offset)
+        self.local_clients_cache[client_cache_key] = client_addr
+        print(f"{self.server_id}: Added client to MAIN_CHAT group")
 
     # find address of groupchat server to inform client
     def find_groupchat_server_addresse(self, group):
@@ -501,13 +534,9 @@ class Server(multiprocessing.Process):
         server_socket.close()
 
      
-    def filter_groups(self, group):
-        group_count = 0
-        for key in self.local_servers_cache:
-            if group in key:
-                group_count = group_count + 1
-        
-        return group_count
+    def filter_clients(self, group):
+        # This method is no longer used for generating keys
+        return len([key for key in self.local_clients_cache if group in key])
     
     def filter_clients(self, group):
         client_count = 0
@@ -518,48 +547,48 @@ class Server(multiprocessing.Process):
         return client_count
     
     def find_group_of_client(self, addr):
-        for key in self.local_clients_cache:
-            value = self.local_clients_cache[key][0]
-            if value == addr[0]:
-                group = key[0]
-                return group
+        # Since all clients are in the same group, we can simplify this
+        return "MAIN_CHAT"
     
 
     # send updated group view/servers cache to all server
     def updateCacheList(self):
-        PORT = 5980
-        BROADCAST_ADDRESS = self.broadcast_address
-        servers_cache_as_string = json.dumps(self.local_servers_cache, indent=2).encode('utf-8')
-        clients_cache_as_string = json.dumps(self.local_clients_cache, indent=2).encode('utf-8')
-        group_cache_as_string = json.dumps(self.local_group_cache, indent=2).encode('utf-8')
-        separator = "_"
+        try:
+            PORT = 5980
+            BROADCAST_ADDRESS = self.broadcast_address
 
-        MSG = servers_cache_as_string + separator.encode('utf-8') + clients_cache_as_string + separator.encode('utf-8') + group_cache_as_string
-        broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        time.sleep(2)
+            # Create proper JSON strings with double quotes
+            servers_cache_json = json.dumps(self.local_servers_cache)
+            clients_cache_json = json.dumps(self.local_clients_cache)
+            group_cache_json = json.dumps(self.local_group_cache)
+            
+            # Use a different separator that won't appear in JSON
+            separator = "|||"
 
-        if self.os == "macOS":
-            broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            broadcast_socket.sendto(MSG, (BROADCAST_ADDRESS, PORT))
-            print("broadcast sent to", BROADCAST_ADDRESS, PORT, "with message", MSG)
-        else:
-            broadcast_socket.sendto(MSG, (BROADCAST_ADDRESS, PORT))
-        broadcast_socket.close()
+            MSG = f"{servers_cache_json}{separator}{clients_cache_json}{separator}{group_cache_json}"
+            
+            broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            time.sleep(2)
 
-    # listen for update of the groupview/server cache by MAIN server
+            if self.os == "macOS":
+                broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            
+            broadcast_socket.sendto(MSG.encode('utf-8'), (BROADCAST_ADDRESS, PORT))
+            print(f"{self.server_id}: Cache update broadcast sent")
+            
+        except Exception as e:
+            print(f"Error in updateCacheList: {e}")
+        finally:
+            broadcast_socket.close()
+
+    # listen for update of the groupview/server cache by LEADER server
     def listen_for_cache_update(self):
         BROADCAST_ADDRESS = self.broadcast_address
         BROADCAST_PORT = 5980
 
-        # Local host information
-        # MY_HOST = socket.gethostname()
-        # MY_IP = socket.gethostbyname(MY_HOST)
-
-        # Create a UDP socket
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Set the socket to broadcast and enable reusing addresses
         listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
@@ -569,87 +598,137 @@ class Server(multiprocessing.Process):
         else:
             listen_socket.bind(('', BROADCAST_PORT))
 
-        print(self.server_id+": "+"Listening to cache update broadcast messages")
+        print(f"{self.server_id}: Listening to cache update broadcast messages")
 
         while self.keep_running_nonLeader == True:
             try:
                 data, addr = listen_socket.recvfrom(1024)
                 if data:
                     message = data.decode('utf-8')
-                    print(self.server_id+": "+"Received cache update broadcast message:")
-                    splitted = message.split("_")
-                    server_cache_json = json.loads(splitted[0])
-                    client_cache_json = json.loads(splitted[1])
-                    group_cache_json = json.loads(splitted[2])
-                    self.local_servers_cache = server_cache_json
-                    self.local_clients_cache = client_cache_json
-                    self.local_group_cache = group_cache_json
-                    print("Group Cache:  ", self.local_group_cache)
-                    print("Server Cache: ", self.local_servers_cache)
-                    print("Client Cache: ", self.local_clients_cache)
-            except socket.timeout:
-                pass #Timeout reached
+                    print(f"{self.server_id}: Received cache update broadcast message")
+                    
+                    # Split using the new separator
+                    splitted = message.split("|||")
+                    
+                    if len(splitted) == 3:
+                        try:
+                            server_cache_json = json.loads(splitted[0])
+                            client_cache_json = json.loads(splitted[1])
+                            group_cache_json = json.loads(splitted[2])
+                            
+                            self.local_servers_cache = server_cache_json
+                            self.local_clients_cache = client_cache_json
+                            self.local_group_cache = group_cache_json
+                            
+                            print(f"{self.server_id}: Cache updated successfully")
+                        except json.JSONDecodeError as e:
+                            print(f"Error decoding JSON: {e}")
+                    else:
+                        print(f"Invalid message format: expected 3 parts, got {len(splitted)}")
+                        
+            except Exception as e:
+                print(f"Error in listen_for_cache_update: {e}")
+                time.sleep(1)  # Add small delay to prevent tight loop
 
     # listen for client chat messages to distribute them to all group members afterwards
     def listen_for_client_messages(self):
-
-        PORT = 50001
-
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.bind((self.server_address, PORT))
-        server_socket.listen()
-
-        print(self.server_id+": "+"Group-chat server is listening for client messages at port: ", PORT)
-
-        while True:
-            connection, addr = server_socket.accept()
-
-            message = connection.recv(1024)
+        PORT = client_broadcast_listener_port
+        
+        try:
+            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             
-            print(self.server_id+": "+"Received message from client: "+message.decode('utf-8'))
+            print(f"{self.server_id}: Attempting to bind to {self.server_address}:{PORT}")
+            server_socket.bind((self.server_address, PORT))
+            print(f"{self.server_id}: Successfully bound to {self.server_address}:{PORT}")
+            
+            server_socket.listen(5)
+            print(f"{self.server_id}: Socket is now listening for incoming connections")
 
-            #response = "Hello, client! I received your message."
-            #connection.sendall(bytes(response, 'utf-8'))
-            connection.close()
-
-            if message:
-                self.distribute_chat_message(message, addr)
+            while True:
+                try:
+                    connection, addr = server_socket.accept()
+                    connection.settimeout(5)
+                    
+                    try:
+                        data = connection.recv(1024)
+                        if data:
+                            message_text = data.decode('utf-8')
+                            parts = message_text.split('|')  # Split username and message
+                            if len(parts) >= 2:
+                                sender_username = parts[0]
+                                message = parts[1]
+                                print(f"{self.server_id}: Received message from {sender_username}: {message}")
+                                self.distribute_chat_message(message.encode('utf-8'), addr, sender_username)
+                    except socket.timeout:
+                        print(f"Timeout receiving message from {addr}")
+                    except Exception as e:
+                        print(f"Error receiving message from {addr}: {e}")
+                    finally:
+                        connection.close()
+                        
+                except Exception as e:
+                    print(f"Error accepting connection: {e}")
+                    time.sleep(1)
+                    
+        except Exception as e:
+            print(f"Error setting up message listener: {e}")
+        finally:
+            server_socket.close()
 
     # determine the receiver list of the received client chat message
-    def distribute_chat_message(self, message, addr):
-        group = self.find_group_of_client(addr)
+    def distribute_chat_message(self, message, addr, sender_username=None):
+        try:
+            group = "MAIN_CHAT"
+            receiver_list = []
 
-        receiver_list = []
+            # Just use the username that was passed with the message
+            if not sender_username:
+                # Fallback to finding username in cache if not provided
+                for key, client_info in self.local_clients_cache.items():
+                    if client_info['addr'][0] == addr[0]:
+                        sender_username = client_info['username']
+                        break
 
-        for key in self.local_clients_cache:
-            if group in key:
-                if addr[0] != self.local_clients_cache[key][0]:
-                    if self.local_clients_cache[key][0] not in receiver_list:
-                        receiver_list.append(self.local_clients_cache[key][0])
-                        print(self.server_id+": "+"Group receiver list "+str(receiver_list))
-                elif addr[0] == self.local_clients_cache[key][0]:
-                    sender = key
+            # Build receiver list
+            for key, client_info in self.local_clients_cache.items():
+                if client_info['addr'][0] != addr[0]:
+                    receiver_list.append(client_info['addr'][0])
 
-        distribute_chat_thread = threading.Thread(target=self.send_chat_message_to_clients(message, receiver_list, sender))
-        distribute_chat_thread.start()
+            if receiver_list:
+                print(f"{self.server_id}: Distributing message to clients: {receiver_list}")
+                self.send_chat_message_to_clients(message, receiver_list, sender_username)
+            else:
+                print(f"{self.server_id}: No other clients to send message to")
+                
+        except Exception as e:
+            print(f"Error in distribute_chat_message: {e}")
 
     # distribute the received client chat message to all members of the group
-    def send_chat_message_to_clients(self, message, receiver_list, sender):
+    def send_chat_message_to_clients(self, message, receiver_list, sender_username):
+        PORT = client_forward_message_multicast_port
 
-        PORT = 51000
+        try:
+            decoded_message = message.decode('utf-8')
+            new_message = f"{sender_username}: {decoded_message}"
+            print(f"{self.server_id}: Preparing to send: {new_message}")
+            encoded_message = new_message.encode('utf-8')
 
-        decoded_message = message.decode('utf-8')
-        new_message = sender + ": " + decoded_message
-        encoded_message = new_message.encode('utf-8')
-
-        for client in receiver_list:
-            try:
-                server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                server_socket.connect((client, PORT))
-                server_socket.sendall(encoded_message)
-                server_socket.close()
-            except (ConnectionRefusedError, TimeoutError):
-                print(f'Unable to send to {client}')           
+            for client in receiver_list:
+                try:
+                    print(f"{self.server_id}: Attempting to send to {client}:{PORT}")
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+                        server_socket.settimeout(5)
+                        server_socket.connect((client, PORT))
+                        server_socket.sendall(encoded_message)
+                        print(f"{self.server_id}: Successfully sent to {client}")
+                except (ConnectionRefusedError, TimeoutError) as e:
+                    print(f'{self.server_id}: Unable to send to {client}: {e}')
+                except Exception as e:
+                    print(f'{self.server_id}: Error sending to {client}: {e}')
+                    
+        except Exception as e:
+            print(f"{self.server_id}: Error in send_chat_message_to_clients: {e}")        
 
     def start_leader_election(self):
         #Reset last heartbeat timestamp
@@ -731,44 +810,42 @@ class Server(multiprocessing.Process):
         participant = p
     
     def leader_election(self):
-        self.local_servers_cache = Server.local_servers_cache
-        #ring_socket.bind((self.server_address, leader_election_port))  # Bind to the server's IP and leader election port
+        # Remove the reference to Server.local_servers_cache
         while self.keep_running_nonLeader == True:
-            # Receive election messages from neighbors.
-            #print(self.ring_socket)
-            data, address = self.ring_socket.recvfrom(4096)
-            #Reset last heartbeat timestamp
-            self.last_heartbeat_timestamp = None
-            if data:
-                election_message = json.loads(data.decode())
-                received_id = election_message.get('id')
-                received_isLeader = election_message.get('isLeader')
-                print("Received UUID:", received_id)
-                print("Own UUID:", self.server_uuid)
-                print("Received isLeader:", received_isLeader)
-                if received_isLeader == False:
-                    # Logic to handle the election process based on the received UUID.
-                    if not self.participant:
-                        # Forward the message to the next server in the ring.
-                        neighbor_info = self.get_neighbour('right')
-                        print("got neighbor", neighbor_info)
-                        if neighbor_info:
-                            self.send_election_message(neighbor_info['server_address'], received_id, received_isLeader)
-                    self.participant = True
-                elif received_isLeader == True:
-                    if received_id == self.server_uuid:
-                        self.handle_leader_tasks()
-                    elif received_id > self.server_uuid:
-                        # Agree to leader
-                        neighbor_info = self.get_neighbour('right')
-                        print("got neighbor", neighbor_info)
-                        if neighbor_info:
-                            self.send_election_message(neighbor_info['server_address'], received_id, received_isLeader)
+            try:
+                data, address = self.ring_socket.recvfrom(4096)
+                # Reset last heartbeat timestamp
+                self.last_heartbeat_timestamp = None
+                if data:
+                    election_message = json.loads(data.decode())
+                    received_id = election_message.get('id')
+                    received_isLeader = election_message.get('isLeader')
+                    print("Received UUID:", received_id)
+                    print("Own UUID:", self.server_uuid)
+                    print("Received isLeader:", received_isLeader)
+                    if received_isLeader == False:
+                        if not self.participant:
+                            neighbor_info = self.get_neighbour('right')
+                            print("got neighbor", neighbor_info)
+                            if neighbor_info:
+                                self.send_election_message(neighbor_info['server_address'], received_id, received_isLeader)
+                        self.participant = True
+                    elif received_isLeader == True:
+                        if received_id == self.server_uuid:
+                            self.handle_leader_tasks()
+                        elif received_id > self.server_uuid:
+                            neighbor_info = self.get_neighbour('right')
+                            print("got neighbor", neighbor_info)
+                            if neighbor_info:
+                                self.send_election_message(neighbor_info['server_address'], received_id, received_isLeader)
+                        else:
+                            print("Failed")
+                        self.participant = False
                     else:
-                        print("Failed")
-                    self.participant = False
-                else:
-                    print("Leader Election failed")
+                        print("Leader Election failed")
+            except Exception as e:
+                print(f"Error in leader election: {e}")
+                time.sleep(1)  # Add small delay to prevent tight loop
 
 
     def declare_victory(self):
@@ -782,22 +859,70 @@ class Server(multiprocessing.Process):
 
     def handle_leader_tasks(self):
         # Perform leader-specific tasks here
-        print(self.server_id+": "+"++++++++++++++++++++++++++++++++++++")
-        print(self.server_id+": "+str(self.server_address)+" is now the leader")
-        print(self.server_id+": "+"++++++++++++++++++++++++++++++++++++")
-        print("Server Cache:", self.local_servers_cache)
-        del self.local_servers_cache[self.server_id]
-        print("Server Cache:", self.local_servers_cache)
+        print(f"{self.server_id}: ++++++++++++++++++++++++++++++++++++")
+        print(f"{self.server_id}: {self.server_address} is now the leader")
+        print(f"{self.server_id}: ++++++++++++++++++++++++++++++++++++")
+        
+        # Save old ID before changing to LEADER
         old_server_id = self.server_id
-        self.server_id = "MAIN"
-        print(self.server_id+": "+"Server ID was changed from: "+str(old_server_id)+" to "+str(self.server_id))
+        self.server_id = "LEADER"
+        print(f"{self.server_id}: Server ID was changed from: {old_server_id} to {self.server_id}")
 
-        # check if new MAIN server was leader of any groupchats and reassign these to serverID MAIN
+        # Reassign chat groups
         self.reassign_chat_groups(old_server_id)
-        # reassign the groupchats of the old MAIN server to the new MAIN server
         self.reassign_chat_groups(self.server_id)
-        self.stop_threads()
+
+        # Stop non-leader threads
+        self.keep_running_nonLeader = False
+        time.sleep(2)  # Give threads time to stop
+
+        # Start LEADER server functionality
+        print(f"{self.server_id}: Starting LEADER server functionality after election")
         self.run_funcs()
+
+        # Notify all clients about the new server
+        self.notify_clients_new_server()
+
+    def notify_clients_new_server(self):
+        PORT = server_new_server_port
+        for key, client_info in self.local_clients_cache.items():
+            try:
+                client_addr = client_info['addr'][0]
+                print(f"{self.server_id}: Notifying client at {client_addr} about new server")
+                server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                server_socket.settimeout(5)  # Add timeout
+                server_socket.connect((client_addr, PORT))
+                # Send new server address directly
+                server_socket.sendall(self.server_address.encode('utf-8'))
+                server_socket.close()
+                print(f"{self.server_id}: Successfully notified client at {client_addr}")
+            except Exception as e:
+                print(f"{self.server_id}: Failed to notify client at {client_addr}: {e}")
+
+    def receive_new_server(self):
+        PORT = server_new_server_port
+        try:
+            client_receive_message_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client_receive_message_socket.bind((self.client_address, PORT))
+            client_receive_message_socket.listen()
+
+            print("Client: Listening for server address update messages")
+
+            while True:
+                try:
+                    connection, addr = client_receive_message_socket.accept()
+                    message = connection.recv(1024).decode('utf-8')
+                    
+                    if message.startswith("SERVER_CHANGE"):
+                        _, new_server = message.split("|")
+                        print(f"Client: Switching to new server: {new_server}")
+                        self.registered_server_address = new_server
+                        # Re-establish connection with new server
+                        self.auto_join()
+                except Exception as e:
+                    print(f"Error receiving server update: {e}")
+        except Exception as e:
+            print(f"Error setting up server update listener: {e}")
 
     def stop_threads(self):
         self.keep_running_nonLeader = False

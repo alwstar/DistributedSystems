@@ -4,10 +4,10 @@ import threading
 import re
 import time
 
-# Define ports as constants
-BROADCAST_PORT = 49153
-MESSAGE_PORT = 51000
-SERVER_UPDATE_PORT = 52000
+auto_join_port = 49153
+send_messages_port = 49153
+receive_messages_port = 51000
+receive_new_serve_port = 52000
 
 class Client(multiprocessing.Process):
 
@@ -48,6 +48,7 @@ class Client(multiprocessing.Process):
         receive_thread.join()
 
     def auto_join(self):
+        PORT = auto_join_port
         retries = 3
         
         while retries > 0:
@@ -61,7 +62,7 @@ class Client(multiprocessing.Process):
                 broadcast_socket.settimeout(5)
                 
                 print(f"Client: Attempting to join with server (attempt {4-retries}/3)")
-                broadcast_socket.sendto(MSG, ('<broadcast>', BROADCAST_PORT))
+                broadcast_socket.sendto(MSG, ('<broadcast>', PORT))
                 
                 data, server = broadcast_socket.recvfrom(1024)
                 
@@ -96,8 +97,10 @@ class Client(multiprocessing.Process):
                     broadcast_socket.close()
                 except:
                     pass
-
+                
     def send_message(self):
+        PORT = send_messages_port
+
         while True:
             try:
                 message = input()
@@ -110,7 +113,7 @@ class Client(multiprocessing.Process):
                     try:
                         client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         client_socket.settimeout(5)
-                        client_socket.connect((self.registered_server_address, BROADCAST_PORT))
+                        client_socket.connect((self.registered_server_address, PORT))
                         
                         # Send message with username
                         full_message = f"{self.username}|{message}"
@@ -139,8 +142,10 @@ class Client(multiprocessing.Process):
                 break
 
     def receive_messages(self):
+        PORT = receive_messages_port
+
         client_receive_message_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client_receive_message_socket.bind((self.client_address, MESSAGE_PORT))
+        client_receive_message_socket.bind((self.client_address, PORT))
         client_receive_message_socket.listen()
 
         print("Client: Listening for groupchat messages")
@@ -151,9 +156,10 @@ class Client(multiprocessing.Process):
             print(message.decode('utf-8'))  # Message already includes username from server
 
     def receive_new_server(self):
+        PORT = receive_new_serve_port
         try:
             client_receive_message_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client_receive_message_socket.bind((self.client_address, SERVER_UPDATE_PORT))
+            client_receive_message_socket.bind((self.client_address, PORT))
             client_receive_message_socket.listen()
 
             print("Client: Listening for server address update messages")

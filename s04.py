@@ -11,10 +11,15 @@ import re
 
 client_broadcast_listener_port = 49153
 server_broadcast_listener_port = 49154
+
 server_heartbeat_tcp_listener_port = 49160
+
 client_receive_chat_tcp_port = 50001
 client_forward_message_multicast_port = 51000
+server_new_server_port = 52000
+
 leader_election_port = 49161
+
 multicast_group_ip = '224.0.1.1'
 
 last_heartbeat_timestamp = None
@@ -52,8 +57,8 @@ class Server(multiprocessing.Process):
         self.keep_running_nonLeader = True
         self.is_admin_of_groupchat = False
         
-        # Initialize with MAIN server ID
-        self.server_id = "MAIN"
+        # Initialize with LEADER server ID
+        self.server_id = "LEADER"
         
         # Initialize the single chat group
         self.local_group_cache["MAIN_CHAT"] = "MAIN"
@@ -141,8 +146,8 @@ class Server(multiprocessing.Process):
         # determine the os type
         os = self.get_os_type()
 
-        BROADCAST_PORT = 49154     
-        MSG = bytes("HI MAIN SERVER", 'utf-8')
+        BROADCAST_PORT = server_broadcast_listener_port     
+        MSG = bytes("HI LEADER SERVER", 'utf-8')
 
         broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -151,7 +156,7 @@ class Server(multiprocessing.Process):
 
         received_response = False
 
-        # try 5 times to find the MAIN server, otherwise remains as MAIN
+        # try 5 times to find the LEADER server, otherwise remains as LEADER
         for i in range(0,5):
             print("Trying to find other servers...")
         
@@ -170,7 +175,7 @@ class Server(multiprocessing.Process):
                 if server_response:
                     match = re.search(r'\b([A-Za-z])\b$', message.decode('utf-8'))
                     self.server_id = match.group(1)
-                    print('Received message from MAIN server: ', message.decode('utf-8'))
+                    print('Received message from LEADER server: ', message.decode('utf-8'))
                     received_response = True
                     self.run_funcs()
                     break
@@ -178,13 +183,13 @@ class Server(multiprocessing.Process):
         broadcast_socket.close()
         
         if not received_response:
-            # We keep our initial MAIN server_id
-            print("No other server was found, continuing as MAIN server.")
+            # We keep our initial LEADER server_id
+            print("No other server was found, continuing as LEADER server.")
             self.run_funcs()
 
     def run_funcs(self):
-        if self.server_id == "MAIN":
-            print(f"{self.server_id}: Starting main server functions...")
+        if self.server_id == "LEADER":
+            print(f"{self.server_id}: Starting LEADER server functions...")
             
             client_listener_thread = threading.Thread(target=self.listen_for_clients)
             server_listener_thread = threading.Thread(target=self.listen_for_servers)
@@ -304,7 +309,7 @@ class Server(multiprocessing.Process):
             except socket.error as e:
                 print(f"Error: {e}")
 
-    # find every group where the dead server was admin and reassign group to (new) MAIN server
+    # find every group where the dead server was admin and reassign group to (new) LEADER server
     def reassign_chat_groups(self, dead_server_id):
         
         reassigned_groups = []
@@ -323,295 +328,311 @@ class Server(multiprocessing.Process):
         if self.is_admin_of_groupchat == False:
             start_listen_client_message_thread = threading.Thread(target=self.start_listen_client_messages)
             start_listen_client_message_thread.start()
-            # find out which clients need to be informed about their groupchat server change
-            def update_group_server_of_client(self, reassigned_groups):
 
-                for group in reassigned_groups:
-                    clients_to_inform = []
-                    for client in self.local_clients_cache:
-                        if client[0] == group:
-                            clients_to_inform.append(client)
+    # find out which clients need to be informed about their groupchat server change
+    def update_group_server_of_client(self, reassigned_groups):
 
-                    new_group_server_addr = self.server_address    
-                    self.send_client_new_group_server_address(new_group_server_addr, clients_to_inform)
+        for group in reassigned_groups:
+            clients_to_inform = []
+            for client in self.local_clients_cache:
+                if client[0] == group:
+                    clients_to_inform.append(client)
 
-            # inform clients about the address of their new groupchat server
-            def send_client_new_group_server_address(self, addr, clients_to_inform):
-                for client in clients_to_inform: 
-                    client_addr = self.local_clients_cache[client]
+            new_group_server_addr = self.server_address    
+            self.send_client_new_group_server_address(new_group_server_addr, clients_to_inform)
 
-                    try:
-                        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        server_socket.connect((client_addr[0], client_receive_chat_tcp_port))
-                        server_socket.sendall(addr.encode('utf-8'))
-                        server_socket.close()
-                    except (ConnectionRefusedError, TimeoutError):
-                        print(f'Unable to send to {client_addr}') 
+    # inform clients about the address of their new groupchat server
+    def send_client_new_group_server_address(self, addr, clients_to_inform):
+        PORT = server_new_server_port
 
-            
-            def check_heartbeat_timeout(self):
-                while self.keep_running_nonLeader == True:
-                    time.sleep(5)  # Adjust the interval as needed
-                    if self.last_heartbeat_timestamp is not None:
-                        current_time = time.time()
-                        # Define the timeout period (15 seconds)
-                        timeout_duration = 15
-                        if current_time - self.last_heartbeat_timestamp >= timeout_duration:
-                            print(self.server_id+": "+"No heartbeats received for "+str(timeout_duration)+" seconds. Initiating LCR...")
-                            # Call a function to initiate the LCR algorithm here
-                            print("Server cache:", self.local_servers_cache)
-                            Server.local_servers_cache = self.local_servers_cache
-                            self.start_leader_election()
-            
-            # find highest server ID in cache
-            def get_last_server_id(self):      
-                # Get all server IDs from the servers cache
-                if self.local_servers_cache:
-                    server_ids = [id for id in self.local_servers_cache.keys() if len(id) == 1]
-                    if server_ids:
-                        return ord(max(server_ids))
-                
-                # If no servers or only MAIN exists, return ascii value before 'A'
-                return 64  # ASCII value before 'A'
+        for client in clients_to_inform: 
+            client_addr = self.local_clients_cache[client]
 
-            # listen for servers if they want to join the DS
-            def listen_for_servers(self):
-                # Create a UDP socket
-                listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                # Set the socket to broadcast and enable reusing addresses
-                listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                if self.os == "macOS":
-                    listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-                    listen_socket.bind((self.broadcast_address, server_broadcast_listener_port))
+            try:
+                server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                server_socket.connect((client_addr[0], PORT))
+                server_socket.sendall(addr.encode('utf-8'))
+                server_socket.close()
+            except (ConnectionRefusedError, TimeoutError):
+                print(f'Unable to send to {client_addr}') 
+
+    
+    def check_heartbeat_timeout(self):
+        while self.keep_running_nonLeader == True:
+            time.sleep(5)  # Adjust the interval as needed
+            if self.last_heartbeat_timestamp is not None:
+                current_time = time.time()
+                # Define the timeout period (15 seconds)
+                timeout_duration = 15
+                if current_time - self.last_heartbeat_timestamp >= timeout_duration:
+                    print(self.server_id+": "+"No heartbeats received for "+str(timeout_duration)+" seconds. Initiating LCR...")
+                    # Call a function to initiate the LCR algorithm here
+                    print("Server cache:", self.local_servers_cache)
+                    Server.local_servers_cache = self.local_servers_cache
+                    self.start_leader_election()
+    
+    # find highest server ID in cache
+    def get_last_server_id(self):      
+        # Get all server IDs from the servers cache
+        if self.local_servers_cache:
+            server_ids = [id for id in self.local_servers_cache.keys() if len(id) == 1]
+            if server_ids:
+                return ord(max(server_ids))
+        
+        # If no servers or only LEADER exists, return ascii value before 'A'
+        return 64  # ASCII value before 'A'
+
+    # listen for servers if they want to join the DS
+    def listen_for_servers(self):
+
+        BROADCAST_PORT = server_broadcast_listener_port
+        BROADCAST_ADDRESS = self.broadcast_address
+
+        # Create a UDP socket
+        listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Set the socket to broadcast and enable reusing addresses
+        listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if self.os == "macOS":
+            listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            listen_socket.bind((BROADCAST_ADDRESS, BROADCAST_PORT))
+        else:
+            listen_socket.bind(('', BROADCAST_PORT))
+
+        print(self.server_id+": "+"Listening to server register broadcast messages")
+
+        while True:
+            data, addr = listen_socket.recvfrom(1024)
+            if data:
+                message = data.decode('utf-8')
+                last_server_id = self.get_last_server_id()
+                new_server_id = chr(last_server_id + 1)
+                #new_server_id = last_server_id + 1
+                self.local_servers_cache[new_server_id] = addr
+                self.local_group_cache[new_server_id] = new_server_id
+                #print("GroupCache: ", self.local_group_cache)
+
+                print(self.server_id+": "+"Received server register broadcast message:", message)
+
+                #self.register_server(addr, new_server_id)
+
+                register_server_thread = threading.Thread(target=self.register_server(addr, new_server_id))
+                register_server_thread.start()
+                update_cache_thread = threading.Thread(target=self.updateCacheList)
+                if update_cache_thread.is_alive:
+                    update_cache_thread.run()
                 else:
-                    listen_socket.bind(('', server_broadcast_listener_port))
+                    update_cache_thread.start()
+                    
+    def register_server(self, addr, server_id):
+        message = 'Hi ' + addr[0] + ' this is your chat-group ID: ' + str(server_id)
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        server_socket.connect((addr[0], addr[1]))
+        server_socket.sendto(str.encode(message), addr)
+        server_socket.close()
 
-                print(self.server_id+": "+"Listening to server register broadcast messages")
+    def listen_for_clients(self):
+        BROADCAST_PORT = client_broadcast_listener_port
+        BROADCAST_ADDRESS = self.broadcast_address
 
-                while True:
-                    data, addr = listen_socket.recvfrom(1024)
-                    if data:
-                        message = data.decode('utf-8')
-                        last_server_id = self.get_last_server_id()
-                        new_server_id = chr(last_server_id + 1)
-                        #new_server_id = last_server_id + 1
-                        self.local_servers_cache[new_server_id] = addr
-                        self.local_group_cache[new_server_id] = new_server_id
-                        #print("GroupCache: ", self.local_group_cache)
+        listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        
+        if self.os == "macOS":
+            listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            listen_socket.bind((BROADCAST_ADDRESS, BROADCAST_PORT))
+        else:
+            listen_socket.bind(('', BROADCAST_PORT))
 
-                        print(self.server_id+": "+"Received server register broadcast message:", message)
+        print(f"{self.server_id}: Listening for client connections")
 
-                        #self.register_server(addr, new_server_id)
-
-                        register_server_thread = threading.Thread(target=self.register_server(addr, new_server_id))
-                        register_server_thread.start()
+        while True:
+            try:
+                data, addr = listen_socket.recvfrom(1024)
+                if data:
+                    message = data.decode('utf-8')
+                    parts = message.split('|')  # Using | as separator
+                    if len(parts) >= 3 and parts[0] == 'join':
+                        username = parts[2]
+                        print(f"{self.server_id}: New client {username} connected from {addr}")
+                        self.handle_client_join(addr, username)
+                        print(f"{self.server_id}: Client cache after join: {self.local_clients_cache}")
+                        
                         update_cache_thread = threading.Thread(target=self.updateCacheList)
-                        if update_cache_thread.is_alive:
-                            update_cache_thread.run()
-                        else:
-                            update_cache_thread.start()
-                            
-            def register_server(self, addr, server_id):
-                message = 'Hi ' + addr[0] + ' this is your chat-group ID: ' + str(server_id)
-                server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                server_socket.connect((addr[0], addr[1]))
-                server_socket.sendto(str.encode(message), addr)
-                server_socket.close()
-
-            def listen_for_clients(self):
-                listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        update_cache_thread.start()
+            except Exception as e:
+                print(f"Error in listen_for_clients: {e}")
                 
-                if self.os == "macOS":
-                    listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-                    listen_socket.bind((self.broadcast_address, client_broadcast_listener_port))
-                else:
-                    listen_socket.bind(('', client_broadcast_listener_port))
+    def handle_client_join(self, client_addr, username):
+        try:
+            server_addr = self.server_address
+            self.send_reply_to_client(server_addr, client_addr)
 
-                print(f"{self.server_id}: Listening for client connections")
-
-                while True:
-                    try:
-                        data, addr = listen_socket.recvfrom(1024)
-                        if data:
-                            message = data.decode('utf-8')
-                            parts = message.split('|')  # Using | as separator
-                            if len(parts) >= 3 and parts[0] == 'join':
-                                username = parts[2]
-                                print(f"{self.server_id}: New client {username} connected from {addr}")
-                                self.handle_client_join(addr, username)
-                                print(f"{self.server_id}: Client cache after join: {self.local_clients_cache}")
-                                
-                                update_cache_thread = threading.Thread(target=self.updateCacheList)
-                                update_cache_thread.start()
-                    except Exception as e:
-                        print(f"Error in listen_for_clients: {e}")
+            # Increment global counter
+            self.client_counter += 1
+            client_cache_key = f"MAIN_CHAT{self.client_counter}"
+            
+            # Store both address and username
+            self.local_clients_cache[client_cache_key] = {
+                'addr': client_addr,
+                'username': username
+            }
+            
+            print(f"{self.server_id}: Added client {username} to MAIN_CHAT group with key {client_cache_key}")
+            print(f"{self.server_id}: Current cache: {self.local_clients_cache}")
+        except Exception as e:
+            print(f"Error in handle_client_join: {e}")
+            import traceback
+            print(traceback.format_exc())
                         
-            def handle_client_join(self, client_addr, username):
-                try:
-                    server_addr = self.server_address
-                    self.send_reply_to_client(server_addr, client_addr)
 
-                    # Increment global counter
-                    self.client_counter += 1
-                    client_cache_key = f"MAIN_CHAT{self.client_counter}"
-                    
-                    # Store both address and username
-                    self.local_clients_cache[client_cache_key] = {
-                        'addr': client_addr,
-                        'username': username
-                    }
-                    
-                    print(f"{self.server_id}: Added client {username} to MAIN_CHAT group with key {client_cache_key}")
-                    print(f"{self.server_id}: Current cache: {self.local_clients_cache}")
-                except Exception as e:
-                    print(f"Error in handle_client_join: {e}")
-                    import traceback
-                    print(traceback.format_exc())
-                                
+    # Register client. Check if chatgroup exists, if yes answer client with chatgroup server IP   
+    def register_client(self, group, client_addr):
+        # Since we only have one group, we can simplify this function
+        if group != "MAIN_CHAT":
+            print(self.server_id + ": Only MAIN_CHAT group is available")
+            self.send_negative_reply_to_client(client_addr)
+            return
 
-            # Register client. Check if chatgroup exists, if yes answer client with chatgroup server IP   
-            def register_client(self, group, client_addr):
-                # Since we only have one group, we can simplify this function
-                if group != "MAIN_CHAT":
-                    print(self.server_id + ": Only MAIN_CHAT group is available")
-                    self.send_negative_reply_to_client(client_addr)
-                    return
+        server_addr = self.server_address
+        self.send_reply_to_client(server_addr, client_addr)
 
-                server_addr = self.server_address
-                self.send_reply_to_client(server_addr, client_addr)
+        client_count = self.filter_clients(group)
+        self.client_cache_key_offset = client_count + 1
+        client_cache_key = group + str(self.client_cache_key_offset)
+        self.local_clients_cache[client_cache_key] = client_addr
+        print(f"{self.server_id}: Added client to MAIN_CHAT group")
 
-                client_count = self.filter_clients(group)
-                self.client_cache_key_offset = client_count + 1
-                client_cache_key = group + str(self.client_cache_key_offset)
-                self.local_clients_cache[client_cache_key] = client_addr
-                print(f"{self.server_id}: Added client to MAIN_CHAT group")
-
-            # find address of groupchat server to inform client
-            def find_groupchat_server_addresse(self, group):
-                # double check if group really exist
-                for key in self.local_group_cache:
-                    if group == str(key):
-                        if self.local_group_cache[key] == "MAIN":
-                            addr = self.server_address
-                        else:
-                            id = self.local_group_cache[key]
-                            addr = self.local_servers_cache[id][0]
-
-                return addr
-            
-            def send_negative_reply_to_client(self, client_addr):
-                message = "Group does not exist"
-                server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                server_socket.connect((self.server_address, client_receive_chat_tcp_port))
-                server_socket.sendto(str.encode(message), client_addr)
-                server_socket.close()
-            
-            def send_reply_to_client(self, server_addr, client_addr):
-                message = 'Hi ' + client_addr[0] + ' this is your groupchat server: ' + server_addr
-                server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                server_socket.connect((self.server_address, client_receive_chat_tcp_port))
-                server_socket.sendto(str.encode(message), client_addr)
-                server_socket.close()
-
-             
-            def filter_clients(self, group):
-                # This method is no longer used for generating keys
-                return len([key for key in self.local_clients_cache if group in key])
-            
-            def filter_clients(self, group):
-                client_count = 0
-                for key in self.local_clients_cache:
-                    if group == key[0]:
-                        client_count = client_count + 1
-                        
-                return client_count
-            
-            def find_group_of_client(self, addr):
-                # Since all clients are in the same group, we can simplify this
-                return "MAIN_CHAT"
-            
-
-            # send updated group view/servers cache to all server
-            def updateCacheList(self):
-                try:
-                    # Create proper JSON strings with double quotes
-                    servers_cache_json = json.dumps(self.local_servers_cache)
-                    clients_cache_json = json.dumps(self.local_clients_cache)
-                    group_cache_json = json.dumps(self.local_group_cache)
-                    
-                    # Use a different separator that won't appear in JSON
-                    separator = "|||"
-
-                    MSG = f"{servers_cache_json}{separator}{clients_cache_json}{separator}{group_cache_json}"
-                    
-                    broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                    broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    time.sleep(2)
-
-                    if self.os == "macOS":
-                        broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-                    
-                    broadcast_socket.sendto(MSG.encode('utf-8'), (self.broadcast_address, 5980))
-                    print(f"{self.server_id}: Cache update broadcast sent")
-                    
-                except Exception as e:
-                    print(f"Error in updateCacheList: {e}")
-                finally:
-                    broadcast_socket.close()
-
-            # listen for update of the groupview/server cache by MAIN server
-            def listen_for_cache_update(self):
-                listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-                if self.os == "macOS":
-                    listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-                    listen_socket.bind((self.broadcast_address, 5980))
+    # find address of groupchat server to inform client
+    def find_groupchat_server_addresse(self, group):
+        # double check if group really exist
+        for key in self.local_group_cache:
+            if group == str(key):
+                if self.local_group_cache[key] == "MAIN":
+                    addr = self.server_address
                 else:
-                    listen_socket.bind(('', 5980))
+                    id = self.local_group_cache[key]
+                    addr = self.local_servers_cache[id][0]
 
-                print(f"{self.server_id}: Listening to cache update broadcast messages")
+        return addr
+    
+    def send_negative_reply_to_client(self, client_addr):
+        PORT = 1001
+        message = "Group does not exist"
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        server_socket.connect((self.server_address, PORT))
+        server_socket.sendto(str.encode(message), client_addr)
+        server_socket.close()
+    
+    def send_reply_to_client(self, server_addr, client_addr):
+        PORT = 1000
+        message = 'Hi ' + client_addr[0] + ' this is your groupchat server: ' + server_addr
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        server_socket.connect((self.server_address, PORT))
+        server_socket.sendto(str.encode(message), client_addr)
+        server_socket.close()
 
-                while self.keep_running_nonLeader == True:
-                    try:
-                        data, addr = listen_socket.recvfrom(1024)
-                        if data:
-                            message = data.decode('utf-8')
-                            print(f"{self.server_id}: Received cache update broadcast message")
+     
+    def filter_clients(self, group):
+        # This method is no longer used for generating keys
+        return len([key for key in self.local_clients_cache if group in key])
+    
+    def filter_clients(self, group):
+        client_count = 0
+        for key in self.local_clients_cache:
+            if group == key[0]:
+                client_count = client_count + 1
+                
+        return client_count
+    
+    def find_group_of_client(self, addr):
+        # Since all clients are in the same group, we can simplify this
+        return "MAIN_CHAT"
+    
+
+    # send updated group view/servers cache to all server
+    def updateCacheList(self):
+        try:
+            PORT = 5980
+            BROADCAST_ADDRESS = self.broadcast_address
+
+            # Create proper JSON strings with double quotes
+            servers_cache_json = json.dumps(self.local_servers_cache)
+            clients_cache_json = json.dumps(self.local_clients_cache)
+            group_cache_json = json.dumps(self.local_group_cache)
+            
+            # Use a different separator that won't appear in JSON
+            separator = "|||"
+
+            MSG = f"{servers_cache_json}{separator}{clients_cache_json}{separator}{group_cache_json}"
+            
+            broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            time.sleep(2)
+
+            if self.os == "macOS":
+                broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            
+            broadcast_socket.sendto(MSG.encode('utf-8'), (BROADCAST_ADDRESS, PORT))
+            print(f"{self.server_id}: Cache update broadcast sent")
+            
+        except Exception as e:
+            print(f"Error in updateCacheList: {e}")
+        finally:
+            broadcast_socket.close()
+
+    # listen for update of the groupview/server cache by LEADER server
+    def listen_for_cache_update(self):
+        BROADCAST_ADDRESS = self.broadcast_address
+        BROADCAST_PORT = 5980
+
+        listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+        if self.os == "macOS":
+            listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            listen_socket.bind((BROADCAST_ADDRESS, BROADCAST_PORT))
+        else:
+            listen_socket.bind(('', BROADCAST_PORT))
+
+        print(f"{self.server_id}: Listening to cache update broadcast messages")
+
+        while self.keep_running_nonLeader == True:
+            try:
+                data, addr = listen_socket.recvfrom(1024)
+                if data:
+                    message = data.decode('utf-8')
+                    print(f"{self.server_id}: Received cache update broadcast message")
+                    
+                    # Split using the new separator
+                    splitted = message.split("|||")
+                    
+                    if len(splitted) == 3:
+                        try:
+                            server_cache_json = json.loads(splitted[0])
+                            client_cache_json = json.loads(splitted[1])
+                            group_cache_json = json.loads(splitted[2])
                             
-                            # Split using the new separator
-                            splitted = message.split("|||")
+                            self.local_servers_cache = server_cache_json
+                            self.local_clients_cache = client_cache_json
+                            self.local_group_cache = group_cache_json
                             
-                            if len(splitted) == 3:
-                                try:
-                                    server_cache_json = json.loads(splitted[0])
-                                    client_cache_json = json.loads(splitted[1])
-                                    group_cache_json = json.loads(splitted[2])
-                                    
-                                    self.local_servers_cache = server_cache_json
-                                    self.local_clients_cache = client_cache_json
-                                    self.local_group_cache = group_cache_json
-                                    
-                                    print(f"{self.server_id}: Cache updated successfully")
-                                except json.JSONDecodeError as e:
-                                    print(f"Error decoding JSON: {e}")
-                            else:
-                                print(f"Invalid message format: expected 3 parts, got {len(splitted)}")
-                                
-                    except Exception as e:
-                        print(f"Error in listen_for_cache_update: {e}")
-                        time.sleep(1)  # Add small delay to prevent tight loop
-
-
+                            print(f"{self.server_id}: Cache updated successfully")
+                        except json.JSONDecodeError as e:
+                            print(f"Error decoding JSON: {e}")
+                    else:
+                        print(f"Invalid message format: expected 3 parts, got {len(splitted)}")
+                        
+            except Exception as e:
+                print(f"Error in listen_for_cache_update: {e}")
+                time.sleep(1)  # Add small delay to prevent tight loop
 
     # listen for client chat messages to distribute them to all group members afterwards
     def listen_for_client_messages(self):
-        PORT = client_receive_chat_tcp_port
+        PORT = client_broadcast_listener_port
         
         try:
             server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -842,9 +863,9 @@ class Server(multiprocessing.Process):
         print(f"{self.server_id}: {self.server_address} is now the leader")
         print(f"{self.server_id}: ++++++++++++++++++++++++++++++++++++")
         
-        # Save old ID before changing to MAIN
+        # Save old ID before changing to LEADER
         old_server_id = self.server_id
-        self.server_id = "MAIN"
+        self.server_id = "LEADER"
         print(f"{self.server_id}: Server ID was changed from: {old_server_id} to {self.server_id}")
 
         # Reassign chat groups
@@ -855,15 +876,15 @@ class Server(multiprocessing.Process):
         self.keep_running_nonLeader = False
         time.sleep(2)  # Give threads time to stop
 
-        # Start main server functionality
-        print(f"{self.server_id}: Starting main server functionality after election")
+        # Start LEADER server functionality
+        print(f"{self.server_id}: Starting LEADER server functionality after election")
         self.run_funcs()
 
         # Notify all clients about the new server
         self.notify_clients_new_server()
 
     def notify_clients_new_server(self):
-        PORT = 52000
+        PORT = server_new_server_port
         for key, client_info in self.local_clients_cache.items():
             try:
                 client_addr = client_info['addr'][0]
@@ -879,7 +900,7 @@ class Server(multiprocessing.Process):
                 print(f"{self.server_id}: Failed to notify client at {client_addr}: {e}")
 
     def receive_new_server(self):
-        PORT = 52000
+        PORT = server_new_server_port
         try:
             client_receive_message_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             client_receive_message_socket.bind((self.client_address, PORT))

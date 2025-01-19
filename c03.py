@@ -10,31 +10,46 @@ class Client(multiprocessing.Process):
     client_address = socket.gethostbyname(host)
 
     def __init__(self):
+        self.host = socket.gethostname()
+        self.client_address = socket.gethostbyname(self.host)
         self.run()
 
     def run(self):
-        print("Client: Up and running")
+        print("Client: Starting chat...")
         
-        while True:
-            action = input("Client: Enter 'r' to join the chat: ")
-            if (action == "r"):
-                # Use a single fixed group name instead of asking for input
-                success = self.register("register", "MAIN_CHAT")
+        # Auto-join by sending broadcast
+        self.auto_join()
+        
+        # Start sending and receiving messages
+        send_thread = threading.Thread(target=self.send_message)
+        receive_thread = threading.Thread(target=self.receive_messages)
+        receive_new_server_thread = threading.Thread(target=self.receive_new_server)
 
-                if success == 0:
-                    continue
+        send_thread.start()
+        receive_thread.start()
+        receive_new_server_thread.start()
 
-                send_thread = threading.Thread(target=self.send_message)
-                receive_thread = threading.Thread(target=self.receive_messages)
-                receive_new_server_thread = threading.Thread(target=self.receive_new_server)
+        send_thread.join()
+        receive_thread.join()
 
-                send_thread.start()
-                receive_thread.start()
-                receive_new_server_thread.start()
+    def auto_join(self):
+        PORT = 49153
+        MSG = bytes("join_MAIN_CHAT", 'utf-8')
 
-                # waiting for thread to stop = prevent the program from shutdown before thread is stopped
-                send_thread.join()
-                receive_thread.join()
+        broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        broadcast_socket.sendto(MSG, ('<broadcast>', PORT))
+        
+        # Wait for server response
+        data, server = broadcast_socket.recvfrom(1024)
+        print('Client: Connected to chat server')
+
+        # Get server address from response
+        ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
+        matches = re.findall(ip_pattern, data.decode('utf-8'))
+        self.registered_server_address = matches[1]
+        print("Client: Connected to server:", self.registered_server_address)
+        broadcast_socket.close()
                 
 
     def register(self, message_type, message_group):

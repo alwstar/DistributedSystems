@@ -426,7 +426,6 @@ class Server(multiprocessing.Process):
         server_socket.close()
 
     def listen_for_clients(self):
-        
         BROADCAST_PORT = 49153
         BROADCAST_ADDRESS = self.broadcast_address
 
@@ -441,23 +440,26 @@ class Server(multiprocessing.Process):
         else:
             listen_socket.bind(('', BROADCAST_PORT))
 
-        print(self.server_id+": "+"Listening to client register broadcast messages")
+        print(f"{self.server_id}: Listening for client connections")
 
         while True:
             data, addr = listen_socket.recvfrom(1024)
             if data:
-                message = data.decode('utf-8')
-                print(self.server_id+": "+"Received client register broadcast message:", message)
-                splitted = message.split("_")
-                if (splitted[0] == 'register'):
-                    #self.register_client(splitted[1].upper(), addr)
-                    self.register_client(splitted[1].upper(), addr)
+                print(f"{self.server_id}: New client connected from {addr}")
+                self.handle_client_join(addr)
+                update_cache_thread = threading.Thread(target=self.updateCacheList)
+                update_cache_thread.start()
 
-                    update_cache_thread = threading.Thread(target=self.updateCacheList)
-                    if update_cache_thread.is_alive:
-                        update_cache_thread.run()
-                    else:
-                        update_cache_thread.start()
+    def handle_client_join(self, client_addr):
+        # Auto-add client to MAIN_CHAT group
+        server_addr = self.server_address
+        self.send_reply_to_client(server_addr, client_addr)
+
+        client_count = self.filter_clients("MAIN_CHAT")
+        self.client_cache_key_offset = client_count + 1
+        client_cache_key = "MAIN_CHAT" + str(self.client_cache_key_offset)
+        self.local_clients_cache[client_cache_key] = client_addr
+        print(f"{self.server_id}: Added client to MAIN_CHAT group")
                         
 
     # Register client. Check if chatgroup exists, if yes answer client with chatgroup server IP   
@@ -602,7 +604,7 @@ class Server(multiprocessing.Process):
             except Exception as e:
                 print(f"Error in listen_for_cache_update: {e}")
                 time.sleep(1)  # Add small delay to prevent tight loop
-                
+
     # listen for client chat messages to distribute them to all group members afterwards
     def listen_for_client_messages(self):
 

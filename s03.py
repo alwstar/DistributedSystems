@@ -451,7 +451,7 @@ class Server(multiprocessing.Process):
                 data, addr = listen_socket.recvfrom(1024)
                 if data:
                     message = data.decode('utf-8')
-                    parts = message.split('_')
+                    parts = message.split('|')  # Using | as separator
                     if len(parts) >= 3 and parts[0] == 'join':
                         username = parts[2]
                         print(f"{self.server_id}: New client {username} connected from {addr}")
@@ -462,8 +462,6 @@ class Server(multiprocessing.Process):
                         update_cache_thread.start()
             except Exception as e:
                 print(f"Error in listen_for_clients: {e}")
-                import traceback
-                print(traceback.format_exc())
                 
     def handle_client_join(self, client_addr, username):
         try:
@@ -633,46 +631,40 @@ class Server(multiprocessing.Process):
 
     # listen for client chat messages to distribute them to all group members afterwards
     def listen_for_client_messages(self):
-        PORT = 49153  # Using the same port that works for initial connection
+        PORT = 49153
         
         try:
             server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             
-            # Print binding attempt
             print(f"{self.server_id}: Attempting to bind to {self.server_address}:{PORT}")
-            try:
-                server_socket.bind((self.server_address, PORT))
-                print(f"{self.server_id}: Successfully bound to {self.server_address}:{PORT}")
-            except OSError as e:
-                if e.errno == 98 or e.winerror == 10048:  # Address already in use
-                    print(f"{self.server_id}: Port {PORT} is already in use, trying a different port")
-                    PORT = 50001  # Try alternate port
-                    server_socket.bind((self.server_address, PORT))
-                    print(f"{self.server_id}: Successfully bound to alternate port {PORT}")
+            server_socket.bind((self.server_address, PORT))
+            print(f"{self.server_id}: Successfully bound to {self.server_address}:{PORT}")
             
             server_socket.listen(5)
-            print(f"{self.server_id}: Socket is now listening for incoming connections on port {PORT}")
+            print(f"{self.server_id}: Socket is now listening for incoming connections")
 
             while True:
                 try:
-                    print(f"{self.server_id}: Waiting for new message connection...")
                     connection, addr = server_socket.accept()
-                    print(f"{self.server_id}: New message connection accepted from {addr}")
                     connection.settimeout(5)
                     
                     try:
-                        message = connection.recv(1024)
-                        if message:
-                            print(f"{self.server_id}: Received message from client {addr}: {message.decode('utf-8')}")
-                            self.distribute_chat_message(message, addr)
+                        data = connection.recv(1024)
+                        if data:
+                            message_text = data.decode('utf-8')
+                            parts = message_text.split('|')  # Split username and message
+                            if len(parts) >= 2:
+                                sender_username = parts[0]
+                                message = parts[1]
+                                print(f"{self.server_id}: Received message from {sender_username}: {message}")
+                                self.distribute_chat_message(message.encode('utf-8'), addr, sender_username)
                     except socket.timeout:
                         print(f"Timeout receiving message from {addr}")
                     except Exception as e:
                         print(f"Error receiving message from {addr}: {e}")
                     finally:
                         connection.close()
-                        print(f"{self.server_id}: Connection closed with {addr}")
                         
                 except Exception as e:
                     print(f"Error accepting connection: {e}")
@@ -680,62 +672,44 @@ class Server(multiprocessing.Process):
                     
         except Exception as e:
             print(f"Error setting up message listener: {e}")
-            print(f"Details: {type(e).__name__}: {str(e)}")
         finally:
-            try:
-                server_socket.close()
-                print(f"{self.server_id}: Server socket closed")
-            except:
-                pass
+            server_socket.close()
 
     # determine the receiver list of the received client chat message
-    def distribute_chat_message(self, message, addr):
+    def distribute_chat_message(self, message, addr, sender_username=None):
         try:
-            group = "MAIN_CHAT"  # We know it's always MAIN_CHAT now
+            group = "MAIN_CHAT"
             receiver_list = []
-            sender = None
-            sender_username = None
 
-            print(f"{self.server_id}: Current client cache before distribution: {self.local_clients_cache}")
-            print(f"{self.server_id}: Looking for sender with address {addr[0]}")
+            # Just use the username that was passed with the message
+            if not sender_username:
+                # Fallback to finding username in cache if not provided
+                for key, client_info in self.local_clients_cache.items():
+                    if client_info['addr'][0] == addr[0]:
+                        sender_username = client_info['username']
+                        break
 
-            # First find the sender's ID and username
+            # Build receiver list
             for key, client_info in self.local_clients_cache.items():
-                print(f"{self.server_id}: Comparing with {key}: {client_info['addr'][0]}")
-                if client_info['addr'][0] == addr[0]:
-                    sender = key
-                    sender_username = client_info['username']
-                    print(f"{self.server_id}: Found sender: {sender} ({sender_username})")
-                    break
-            
-            if not sender:
-                print(f"{self.server_id}: Could not find sender ID for address {addr[0]}")
-                return
-
-            # Then build the receiver list
-            for key, client_info in self.local_clients_cache.items():
-                if group in key and client_info['addr'][0] != addr[0]:
+                if client_info['addr'][0] != addr[0]:
                     receiver_list.append(client_info['addr'][0])
-                    print(f"{self.server_id}: Added {client_info['addr'][0]} to receiver list")
 
             if receiver_list:
                 print(f"{self.server_id}: Distributing message to clients: {receiver_list}")
                 self.send_chat_message_to_clients(message, receiver_list, sender_username)
             else:
-                print(f"{self.server_id}: No other clients to send message to. Cache: {self.local_clients_cache}")
+                print(f"{self.server_id}: No other clients to send message to")
                 
         except Exception as e:
             print(f"Error in distribute_chat_message: {e}")
-            import traceback
-            print(traceback.format_exc())
 
     # distribute the received client chat message to all members of the group
-    def send_chat_message_to_clients(self, message, receiver_list, sender):
+    def send_chat_message_to_clients(self, message, receiver_list, sender_username):
         PORT = 51000
 
         try:
             decoded_message = message.decode('utf-8')
-            new_message = f"{sender}: {decoded_message}"
+            new_message = f"{sender_username}: {decoded_message}"
             print(f"{self.server_id}: Preparing to send: {new_message}")
             encoded_message = new_message.encode('utf-8')
 

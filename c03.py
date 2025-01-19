@@ -43,8 +43,9 @@ class Client(multiprocessing.Process):
 
     def auto_join(self):
         PORT = 49153
-        # Include username in the join message
-        MSG = bytes(f"join_MAIN_CHAT_{self.username}", 'utf-8')
+        # Modify the join message to be a clear format
+        join_message = f"join|MAIN_CHAT|{self.username}"  # Using | as separator instead of _
+        MSG = join_message.encode('utf-8')
 
         broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -56,6 +57,7 @@ class Client(multiprocessing.Process):
         ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
         matches = re.findall(ip_pattern, data.decode('utf-8'))
         self.registered_server_address = matches[1]
+        print(f"Client: Connected as {self.username}")
         print(f"Client: Connected to server: {self.registered_server_address}")
         broadcast_socket.close()
                 
@@ -104,12 +106,12 @@ class Client(multiprocessing.Process):
                     break
 
                 try:
-                    print(f"Client: Attempting to connect to {self.registered_server_address}:{PORT}")
                     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     client_socket.settimeout(5)
                     client_socket.connect((self.registered_server_address, PORT))
-                    client_socket.sendall(bytes(message, 'utf-8'))
-                    print("Client: Connected successfully!")
+                    # Send message with username
+                    full_message = f"{self.username}|{message}"
+                    client_socket.sendall(full_message.encode('utf-8'))
                     client_socket.close()
                 except ConnectionRefusedError:
                     print("Unable to connect to server. Server might be down or unreachable.")

@@ -187,29 +187,34 @@ class Server(multiprocessing.Process):
             self.run_funcs()
 
     def run_funcs(self):
-        #print(self.server_id+": "+"Up and running")
         if self.server_id == "MAIN":
-            client_listener_thread = threading.Thread(target=self.listen_for_clients)
-            client_listener_thread.start()
-
-            server_listener_thread = threading.Thread(target=self.listen_for_servers)
-            server_listener_thread.start()
+            print(f"{self.server_id}: Starting main server functions...")
             
+            client_listener_thread = threading.Thread(target=self.listen_for_clients)
+            server_listener_thread = threading.Thread(target=self.listen_for_servers)
             heartbeat_send_thread = threading.Thread(target=self.send_heartbeat)
+            message_listener_thread = threading.Thread(target=self.listen_for_client_messages)
+            
+            client_listener_thread.start()
+            server_listener_thread.start()
             heartbeat_send_thread.start()
-        
+            message_listener_thread.start()
+            
+            print(f"{self.server_id}: All server threads started")
         else:
             self.cache_update_listener_thread = threading.Thread(target=self.listen_for_cache_update)
             self.heartbeat_receive_thread = threading.Thread(target=self.listen_for_heartbeats)
             self.heartbeat_timeout_thread = threading.Thread(target=self.check_heartbeat_timeout)
             self.leader_election_thread = threading.Thread(target=self.leader_election)
+            self.client_message_listener_thread = threading.Thread(target=self.listen_for_client_messages)
 
             self.cache_update_listener_thread.start()
             self.heartbeat_receive_thread.start()
             self.heartbeat_timeout_thread.start()
             self.leader_election_thread.start()
+            self.client_message_listener_thread.start()
 
-            self.start_listen_client_messages()
+            self.is_admin_of_groupchat = True
     
     def start_listen_client_messages(self):
 
@@ -607,8 +612,7 @@ class Server(multiprocessing.Process):
 
     # listen for client chat messages to distribute them to all group members afterwards
     def listen_for_client_messages(self):
-
-        PORT = 50001
+        PORT = 49153  # Using the same port that works for initial connection
         
         try:
             server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -616,19 +620,24 @@ class Server(multiprocessing.Process):
             
             # Print binding attempt
             print(f"{self.server_id}: Attempting to bind to {self.server_address}:{PORT}")
-            server_socket.bind((self.server_address, PORT))
-            print(f"{self.server_id}: Successfully bound to {self.server_address}:{PORT}")
+            try:
+                server_socket.bind((self.server_address, PORT))
+                print(f"{self.server_id}: Successfully bound to {self.server_address}:{PORT}")
+            except OSError as e:
+                if e.errno == 98 or e.winerror == 10048:  # Address already in use
+                    print(f"{self.server_id}: Port {PORT} is already in use, trying a different port")
+                    PORT = 50001  # Try alternate port
+                    server_socket.bind((self.server_address, PORT))
+                    print(f"{self.server_id}: Successfully bound to alternate port {PORT}")
             
             server_socket.listen(5)
-            print(f"{self.server_id}: Socket is now listening for incoming connections")
-
-            print(f"{self.server_id}: Group-chat server is listening for client messages at {self.server_address}:{PORT}")
+            print(f"{self.server_id}: Socket is now listening for incoming connections on port {PORT}")
 
             while True:
                 try:
-                    print(f"{self.server_id}: Waiting for new connection...")
+                    print(f"{self.server_id}: Waiting for new message connection...")
                     connection, addr = server_socket.accept()
-                    print(f"{self.server_id}: New connection accepted from {addr}")
+                    print(f"{self.server_id}: New message connection accepted from {addr}")
                     connection.settimeout(5)
                     
                     try:
@@ -652,8 +661,11 @@ class Server(multiprocessing.Process):
             print(f"Error setting up message listener: {e}")
             print(f"Details: {type(e).__name__}: {str(e)}")
         finally:
-            server_socket.close()
-            print(f"{self.server_id}: Server socket closed")
+            try:
+                server_socket.close()
+                print(f"{self.server_id}: Server socket closed")
+            except:
+                pass
 
     # determine the receiver list of the received client chat message
     def distribute_chat_message(self, message, addr):

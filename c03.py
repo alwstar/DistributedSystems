@@ -86,19 +86,33 @@ class Client(multiprocessing.Process):
         return success
 
     def send_message(self):
-        PORT = 50001
+        PORT = 49153  # Changed from 50001 to test with the working port
 
         while True:
-            message = input()
-            
-            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client_socket.connect((self.registered_server_address, PORT))
-            client_socket.sendall(bytes(message, 'utf-8'))
-            client_socket.close()
+            try:
+                message = input()
+                if message.lower() == 'exit':
+                    print("Client: Shutting down chat client")
+                    break
 
-            # exit logic in server is still missing
-            if message.lower() == 'exit':
-                print("Client: Shutdown chat client")
+                try:
+                    print(f"Client: Attempting to connect to {self.registered_server_address}:{PORT}")
+                    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    client_socket.settimeout(5)  # 5 second timeout
+                    client_socket.connect((self.registered_server_address, PORT))
+                    print("Client: Connected successfully!")
+                    client_socket.sendall(bytes(message, 'utf-8'))
+                    client_socket.close()
+                except ConnectionRefusedError:
+                    print(f"Unable to connect to server at {self.registered_server_address}:{PORT}")
+                    print("Server might be down or the port might be blocked.")
+                except socket.timeout:
+                    print("Connection attempt timed out. Server might be busy.")
+                except Exception as e:
+                    print(f"Error sending message: {e}")
+
+            except Exception as e:
+                print(f"Error in message input: {e}")
                 break
 
     def receive_messages(self):

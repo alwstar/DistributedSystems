@@ -34,7 +34,7 @@ class Server(multiprocessing.Process):
         self.local_servers_cache = dict()
         self.local_clients_cache = dict()
         self.local_group_cache = dict()
-        self.client_cache_key_offset = 0
+        self.client_counter = 0  # Global counter for all clients
 
         # Rest of initialization
         self.os = self.get_os_type()
@@ -468,9 +468,9 @@ class Server(multiprocessing.Process):
             server_addr = self.server_address
             self.send_reply_to_client(server_addr, client_addr)
 
-            client_count = self.filter_clients("MAIN_CHAT")
-            self.client_cache_key_offset = client_count + 1
-            client_cache_key = f"MAIN_CHAT{self.client_cache_key_offset}"
+            # Increment global counter
+            self.client_counter += 1
+            client_cache_key = f"MAIN_CHAT{self.client_counter}"
             
             # Store the complete address tuple
             self.local_clients_cache[client_cache_key] = client_addr
@@ -531,8 +531,8 @@ class Server(multiprocessing.Process):
 
      
     def filter_clients(self, group):
-        # Simplified since we only have one group
-        return len([key for key in self.local_clients_cache if "MAIN_CHAT" in key])
+        # This method is no longer used for generating keys
+        return len([key for key in self.local_clients_cache if group in key])
     
     def filter_clients(self, group):
         client_count = 0

@@ -491,11 +491,6 @@ class Server(multiprocessing.Process):
         server_socket.connect((self.server_address, PORT))
         server_socket.sendto(str.encode(message), client_addr)
         server_socket.close()
-
-     
-    def filter_clients(self, group):
-        # This method is no longer used for generating keys
-        return len([key for key in self.local_clients_cache if group in key])
     
     def filter_clients(self, group):
         client_count = 0
@@ -796,16 +791,6 @@ class Server(multiprocessing.Process):
             except Exception as e:
                 print(f"Error in leader election: {e}")
                 time.sleep(1)  # Add small delay to prevent tight loop
-
-
-    def declare_victory(self):
-        # Declare this server as the leader and notify neighbors.
-        victory_message = {"mid": self.server_uuid, "isLeader": True}
-        neighbor_info = self.get_neighbour('right')
-        self.ring_socket.sendto(json.dumps(victory_message).encode(), neighbor_info['server_address'])
-        #print(self.ring_socket)
-        #if neighbor_info:
-        #    self.send_election_message(neighbor_info['server_address'], self.server_uuid, True)
 
     def handle_leader_tasks(self):
         # Perform leader-specific tasks here

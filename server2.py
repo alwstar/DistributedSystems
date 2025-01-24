@@ -39,7 +39,7 @@ class Server(multiprocessing.Process):
 
         # Server settings
         self.server_uuid = self.generate_uuid()
-        self.server_id = "LEADER"
+        self.server_id = None  # Initially, no leader declared
         self.participant = False
         self.keep_running = True
         self.is_admin_of_groupchat = False
@@ -126,6 +126,7 @@ class Server(multiprocessing.Process):
                 continue
 
         print("No LEADER found. Declaring self as LEADER.")
+        self.server_id = "LEADER"
         self.start_server_functionalities()
 
     def start_server_functionalities(self):
@@ -221,9 +222,11 @@ class Server(multiprocessing.Process):
 
     def get_neighbor(self, direction):
         server_ids = list(self.local_servers_cache.keys())
-        current_index = server_ids.index(self.server_id)
-        neighbor_index = (current_index + 1) % len(server_ids) if direction == 'right' else (current_index - 1) % len(server_ids)
-        return self.local_servers_cache.get(server_ids[neighbor_index])
+        if self.server_id in server_ids:
+            current_index = server_ids.index(self.server_id)
+            neighbor_index = (current_index + 1) % len(server_ids) if direction == 'right' else (current_index - 1) % len(server_ids)
+            return self.local_servers_cache.get(server_ids[neighbor_index])
+        return None
 
     def listen_for_clients(self):
         print("Listening for client connections...")

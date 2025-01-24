@@ -152,7 +152,6 @@ class Server(multiprocessing.Process):
 
         broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         broadcast_socket.settimeout(2)
 
         received_response = False
@@ -219,9 +218,7 @@ class Server(multiprocessing.Process):
     def start_listen_client_messages(self):
 
         self.client_message_listener_thread = threading.Thread(target=self.listen_for_client_messages)
-
         self.client_message_listener_thread.start()
-
         self.is_admin_of_groupchat = True
     
     def get_broadcast_address(self):

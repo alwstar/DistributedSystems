@@ -38,8 +38,7 @@ class Server(multiprocessing.Process):
         self.client_counter = 0  # Global counter for all clients
 
         # Rest of initialization
-        self.os = self.get_os_type()
-        print("Server running on OS: ", self.os)
+        # self.os = self.get_os_type()
         self.active_interface = self.get_active_interface()
         self.server_address = self.get_local_ip_address()
         self.subnet_mask = self.get_subnet_mask(self.active_interface)
@@ -50,7 +49,7 @@ class Server(multiprocessing.Process):
         self.ring_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.ring_socket.bind((self.server_address, leader_election_port))
         self.server_uuid = self.generate_server_uuid()
-        print("My UUID: ", self.server_uuid)
+        print("Server UUID: ", self.server_uuid)
         self.participant = False
         self.keep_running_nonLeader = True
         self.is_admin_of_groupchat = False
@@ -122,13 +121,13 @@ class Server(multiprocessing.Process):
             return None  # Interface does not have IPv4 configuration
         
     # Get the operating system type
-    @staticmethod
-    def get_os_type():
-        system = platform.system()
-        if system == "Windows":
-            return "Windows"
-        else:
-            return "Unknown"
+    # @staticmethod
+    #def get_os_type():
+    #    system = platform.system()
+    #    if system == "Windows":
+    #        return "Windows"
+    #    else:
+    #        return "Unknown"
         
     # Generate a UUID for the server
     @staticmethod
@@ -137,7 +136,7 @@ class Server(multiprocessing.Process):
     
     # Run the server process
     def run(self):
-        print("I'm alive")
+        print("Server started")
         
         # Get the broadcast address from the existing server_instance
         broadcast_address = self.broadcast_address   
@@ -146,7 +145,7 @@ class Server(multiprocessing.Process):
             exit(1)
 
         # determine the os type
-        os = self.get_os_type()
+        # os = self.get_os_type()
 
         BROADCAST_PORT = server_broadcast_listener_port     
         MSG = bytes("HI LEADER SERVER", 'utf-8')
@@ -162,11 +161,7 @@ class Server(multiprocessing.Process):
         for i in range(0,5):
             print("Trying to find other servers...")
         
-            if os == "macOS":
-                broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-                broadcast_socket.sendto(MSG, (broadcast_address, BROADCAST_PORT))
-            else:
-                broadcast_socket.sendto(MSG, (broadcast_address, BROADCAST_PORT))
+            broadcast_socket.sendto(MSG, (broadcast_address, BROADCAST_PORT))
 
             try:             
                 message, server = broadcast_socket.recvfrom(1024)
@@ -270,8 +265,6 @@ class Server(multiprocessing.Process):
         acknowledgment_received = False
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                if self.os == "macOS":
-                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
                 s.settimeout(2)  # Timeout for the connection
                 # Combine server address and port into a tuple
                 server_address_with_port = (server_address, server_port)
@@ -292,8 +285,6 @@ class Server(multiprocessing.Process):
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     try:
-                        if self.os == "macOS":
-                            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
                         s.bind((self.server_address, server_heartbeat_tcp_listener_port))
                         actual_port = s.getsockname()[1]
                         #print(self.server_id+": "+"Heartbeat Listener Started on port "+str(actual_port))
@@ -396,12 +387,7 @@ class Server(multiprocessing.Process):
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # Set the socket to broadcast and enable reusing addresses
         listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if self.os == "macOS":
-            listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            listen_socket.bind((BROADCAST_ADDRESS, BROADCAST_PORT))
-        else:
-            listen_socket.bind(('', BROADCAST_PORT))
+        listen_socket.bind(('', BROADCAST_PORT))
 
         print(self.server_id+": "+"Listening to server register broadcast messages")
 
@@ -440,14 +426,8 @@ class Server(multiprocessing.Process):
         BROADCAST_ADDRESS = self.broadcast_address
 
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        
-        if self.os == "macOS":
-            listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            listen_socket.bind((BROADCAST_ADDRESS, BROADCAST_PORT))
-        else:
-            listen_socket.bind(('', BROADCAST_PORT))
+        listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)  
+        listen_socket.bind(('', BROADCAST_PORT))
 
         print(f"{self.server_id}: Listening for client connections")
 
@@ -576,9 +556,6 @@ class Server(multiprocessing.Process):
             broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             time.sleep(2)
 
-            if self.os == "macOS":
-                broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            
             broadcast_socket.sendto(MSG.encode('utf-8'), (BROADCAST_ADDRESS, PORT))
             print(f"{self.server_id}: Cache update broadcast sent")
             
@@ -594,13 +571,7 @@ class Server(multiprocessing.Process):
 
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-        if self.os == "macOS":
-            listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            listen_socket.bind((BROADCAST_ADDRESS, BROADCAST_PORT))
-        else:
-            listen_socket.bind(('', BROADCAST_PORT))
+        listen_socket.bind(('', BROADCAST_PORT))
 
         print(f"{self.server_id}: Listening to cache update broadcast messages")
 

@@ -24,7 +24,7 @@ multicast_group_ip = '224.0.1.1'
 
 last_heartbeat_timestamp = None
 
-# create election sockets
+# Create a UDP socket for the ring communication
 ring_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 ring_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
@@ -47,8 +47,6 @@ class Server(multiprocessing.Process):
         print(self.active_interface)
         self.last_heartbeat_timestamp = last_heartbeat_timestamp
         self.ring_socket = ring_socket
-        if self.os == "macOS":
-            self.ring_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         self.ring_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.ring_socket.bind((self.server_address, leader_election_port))
         self.server_uuid = self.generate_server_uuid()
@@ -64,6 +62,7 @@ class Server(multiprocessing.Process):
         self.local_group_cache["MAIN_CHAT"] = "MAIN"
         print("Server initialized with default chat group MAIN_CHAT")
 
+    # Get the local IP address of the machine
     @staticmethod
     def get_local_ip_address():
         """ Get the local IP address of the machine. """
@@ -78,6 +77,7 @@ class Server(multiprocessing.Process):
             print(f"Error obtaining local IP address: {e}")
             return '127.0.0.1'  # Fallback to localhost
         
+    # Get the active network interface
     @staticmethod
     def get_active_interface():
         interfaces = ni.interfaces()
@@ -107,6 +107,7 @@ class Server(multiprocessing.Process):
 
         return None
     
+    # Get the subnet mask of the active network interface
     @staticmethod
     def get_subnet_mask(interface):
         try:
@@ -120,20 +121,21 @@ class Server(multiprocessing.Process):
         except KeyError:
             return None  # Interface does not have IPv4 configuration
         
+    # Get the operating system type
     @staticmethod
     def get_os_type():
         system = platform.system()
         if system == "Windows":
             return "Windows"
-        elif system == "Darwin":
-            return "macOS"
         else:
             return "Unknown"
         
+    # Generate a UUID for the server
     @staticmethod
     def generate_server_uuid():
         return str(uuid.uuid4())
     
+    # Run the server process
     def run(self):
         print("I'm alive")
         
@@ -187,6 +189,7 @@ class Server(multiprocessing.Process):
             print("No other server was found, continuing as LEADER server.")
             self.run_funcs()
 
+    # Run the server functions
     def run_funcs(self):
         if self.server_id == "LEADER":
             print(f"{self.server_id}: Starting LEADER server functions...")
@@ -217,6 +220,7 @@ class Server(multiprocessing.Process):
 
             self.is_admin_of_groupchat = True
     
+    # Handle the tasks of the LEADER server
     def start_listen_client_messages(self):
 
         self.client_message_listener_thread = threading.Thread(target=self.listen_for_client_messages)

@@ -162,11 +162,15 @@ class Server(multiprocessing.Process):
     def send_heartbeat(self):
         while True:
             time.sleep(10)
-            for server_id, server_addr in self.local_servers_cache.items():
+            failed_servers = []  # Temporary list to track servers to be removed
+            for server_id, server_addr in list(self.local_servers_cache.items()):
                 if server_addr[0] != self.server_address:
                     if not self.send_heartbeat_to_server(server_addr):
-                        print(f"No heartbeat response from {server_id}. Removing from cache.")
-                        self.local_servers_cache.pop(server_id, None)
+                        print(f"No heartbeat response from {server_id}. Marking for removal.")
+                        failed_servers.append(server_id)
+            # Remove servers after the iteration to avoid runtime modification error
+            for server_id in failed_servers:
+                self.local_servers_cache.pop(server_id, None)
 
     def send_heartbeat_to_server(self, server_addr):
         try:

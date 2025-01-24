@@ -689,31 +689,25 @@ class Server(multiprocessing.Process):
                 self.send_election_message(neighbor_info['server_address'], uuid=None, isLeader=False)
 
     def send_election_message(self, neighbor_address, uuid, isLeader):
-        if isLeader == False and uuid is None:
-            # Create an election message with the server's UUID.
-            election_message = {"id": self.server_uuid, "isLeader": False}
-            # Send the election message to the neighbor's address.
-            self.ring_socket.sendto(json.dumps(election_message).encode(), (neighbor_address[0], leader_election_port))
-            print(election_message, "...sent to: ", neighbor_address, "...on port: ", leader_election_port)
-        elif isLeader == False and uuid < self.server_uuid: #Suggesting itself to leader
-            election_message = {"id": self.server_uuid, "isLeader": True}
-            # Send the election message to the neighbor's address.
-            self.ring_socket.sendto(json.dumps(election_message).encode(), (neighbor_address[0], leader_election_port))
-            print(election_message, "...sent to: ", neighbor_address, "...on port: ", leader_election_port)
-        elif isLeader == False and uuid == self.server_uuid: #Suggesting itself to leader
-            election_message = {"id": self.server_uuid, "isLeader": True}
-            # Send the election message to the neighbor's address.
-            self.ring_socket.sendto(json.dumps(election_message).encode(), (neighbor_address[0], leader_election_port))
-            print(election_message, "...sent to: ", neighbor_address, "...on port: ", leader_election_port)
-        elif isLeader == True and uuid != self.server_uuid: #Agreeing to someone else as leader
-            election_message = {"id": uuid, "isLeader": True}
-            # Send the election message to the neighbor's address.
-            self.ring_socket.sendto(json.dumps(election_message).encode(), (neighbor_address[0], leader_election_port))
-        else: #Sending pid 
-            election_message = {"id": uuid, "isLeader": False}
-            # Send the election message to the neighbor's address.
-            self.ring_socket.sendto(json.dumps(election_message).encode(), (neighbor_address[0], leader_election_port))
-            print(election_message, "...sent to: ", neighbor_address, "...on port: ", leader_election_port)
+        # Determine if server should suggest itself as leader
+        should_suggest_leader = (not isLeader and 
+                            (uuid is None or 
+                                uuid < self.server_uuid or 
+                                uuid == self.server_uuid))
+        
+        # Set message ID and leader status
+        message_id = self.server_uuid if should_suggest_leader else uuid
+        is_leader = should_suggest_leader or (isLeader and uuid != self.server_uuid)
+        
+        # Create and send election message
+        election_message = {"id": message_id, "isLeader": is_leader}
+        self.ring_socket.sendto(json.dumps(election_message).encode(), 
+                            (neighbor_address[0], leader_election_port))
+        
+        # Print message details except when agreeing to another leader
+        if not (isLeader and uuid != self.server_uuid):
+            print(election_message, "...sent to: ", neighbor_address, 
+                "...on port: ", leader_election_port)
 
     def get_neighbour(self, direction):
         # First, convert the dictionary keys (server IDs) to a list.

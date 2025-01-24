@@ -5,7 +5,6 @@ import json
 import time
 import ipaddress
 import netifaces as ni
-import platform
 import uuid
 import re
 
@@ -38,9 +37,8 @@ class Server(multiprocessing.Process):
         self.client_counter = 0  # Global counter for all clients
 
         # Rest of initialization
-        # self.os = self.get_os_type()
         self.active_interface = self.get_active_interface()
-        self.server_address = self.get_local_ip_address()
+        self.server_address = self.get_local_ip()
         self.subnet_mask = self.get_subnet_mask(self.active_interface)
         self.broadcast_address = self.get_broadcast_address()
         print(self.active_interface)
@@ -48,7 +46,7 @@ class Server(multiprocessing.Process):
         self.ring_socket = ring_socket
         self.ring_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.ring_socket.bind((self.server_address, leader_election_port))
-        self.server_uuid = self.generate_server_uuid()
+        self.server_uuid = self.generate_uuid()
         print("Server UUID: ", self.server_uuid)
         self.participant = False
         self.keep_running_nonLeader = True
@@ -63,8 +61,7 @@ class Server(multiprocessing.Process):
 
     # Get the local IP address of the machine
     @staticmethod
-    def get_local_ip_address():
-        """ Get the local IP address of the machine. """
+    def get_local_ip():
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
                 print("Attempting to connect to an external host for IP resolution...")
@@ -73,7 +70,7 @@ class Server(multiprocessing.Process):
                 print(f"Local IP obtained: {local_ip}")
                 return local_ip
         except Exception as e:
-            print(f"Error obtaining local IP address: {e}")
+            print(f"Error obtaining local IP: {e}")
             return '127.0.0.1'  # Fallback to localhost
         
     # Get the active network interface
@@ -88,7 +85,6 @@ class Server(multiprocessing.Process):
                     if ni.AF_INET in addr:
                         ipv4_info = addr[ni.AF_INET][0]
                         ip = ipv4_info['addr']
-                        netmask = ipv4_info['netmask']
 
                         # Optionally check for an active internet connection
                         # This attempts to create a socket using the interface's IP
@@ -110,9 +106,9 @@ class Server(multiprocessing.Process):
     @staticmethod
     def get_subnet_mask(interface):
         try:
-            addr = ni.ifaddresses(interface)
-            if ni.AF_INET in addr:
-                ipv4_info = addr[ni.AF_INET][0]
+            address = ni.ifaddresses(interface)
+            if ni.AF_INET in address:
+                ipv4_info = address[ni.AF_INET][0]
                 subnet_mask = ipv4_info['netmask']
                 return subnet_mask
             else:
@@ -120,23 +116,14 @@ class Server(multiprocessing.Process):
         except KeyError:
             return None  # Interface does not have IPv4 configuration
         
-    # Get the operating system type
-    # @staticmethod
-    #def get_os_type():
-    #    system = platform.system()
-    #    if system == "Windows":
-    #        return "Windows"
-    #    else:
-    #        return "Unknown"
-        
     # Generate a UUID for the server
     @staticmethod
-    def generate_server_uuid():
+    def generate_uuid():
         return str(uuid.uuid4())
     
     # Run the server process
     def run(self):
-        print("Server started")
+        print("Server initialized")
         
         # Get the broadcast address from the existing server_instance
         broadcast_address = self.broadcast_address   
@@ -144,97 +131,90 @@ class Server(multiprocessing.Process):
             print("Failed to obtain broadcast address. Exiting.")
             exit(1)
 
-        # determine the os type
-        # os = self.get_os_type()
-
-        BROADCAST_PORT = server_broadcast_listener_port     
-        MSG = bytes("HI LEADER SERVER", 'utf-8')
+        broadcast_port = server_broadcast_listener_port     
+        message = bytes("HI LEADER SERVER", 'utf-8')
 
         broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        broadcast_socket.settimeout(2)
+        broadcast_socket.settimeout(3)
 
         received_response = False
 
-        # try 5 times to find the LEADER server, otherwise remains as LEADER
+        # try 5 times to find the LEADER, otherwise declare self as LEADER
         for i in range(0,5):
-            print("Trying to find other servers...")
+            print("Trying to find existing LEADER...")
         
-            broadcast_socket.sendto(MSG, (broadcast_address, BROADCAST_PORT))
+            broadcast_socket.sendto(message, (broadcast_address, broadcast_port))
 
             try:             
                 message, server = broadcast_socket.recvfrom(1024)
-                server_response = message.decode('utf-8')
+                response = message.decode('utf-8')
             except socket.timeout:
                 pass
             else:
-                if server_response:
+                if response:
                     match = re.search(r'\b([A-Za-z])\b$', message.decode('utf-8'))
                     self.server_id = match.group(1)
-                    print('Received message from LEADER server: ', message.decode('utf-8'))
+                    print('Received message from LEADER: ', message.decode('utf-8'))
                     received_response = True
-                    self.run_funcs()
+                    self.start_server_functionalities()
                     break
         
         broadcast_socket.close()
         
         if not received_response:
             # We keep our initial LEADER server_id
-            print("No other server was found, continuing as LEADER server.")
-            self.run_funcs()
+            print("No other server was found, declare self as LEADER.")
+            self.start_server_functionalities()
 
     # Run the server functions
-    def run_funcs(self):
+    def start_server_functionalities(self):
         if self.server_id == "LEADER":
-            print(f"{self.server_id}: Starting LEADER server functions...")
+            print(f"{self.server_id}: Starting LEADER server functionalities...")
             
-            client_listener_thread = threading.Thread(target=self.listen_for_clients)
-            server_listener_thread = threading.Thread(target=self.listen_for_servers)
-            heartbeat_send_thread = threading.Thread(target=self.send_heartbeat)
-            message_listener_thread = threading.Thread(target=self.listen_for_client_messages)
+            client_listening_thread = threading.Thread(target=self.listen_for_clients)
+            server_listening_thread = threading.Thread(target=self.listen_for_servers)
+            heartbeat_sending_thread = threading.Thread(target=self.send_heartbeat)
+            message_listening_thread = threading.Thread(target=self.listen_for_client_messages)
             
-            client_listener_thread.start()
-            server_listener_thread.start()
-            heartbeat_send_thread.start()
-            message_listener_thread.start()
+            client_listening_thread.start()
+            server_listening_thread.start()
+            heartbeat_sending_thread.start()
+            message_listening_thread.start()
             
             print(f"{self.server_id}: All server threads started")
         else:
-            self.cache_update_listener_thread = threading.Thread(target=self.listen_for_cache_update)
-            self.heartbeat_receive_thread = threading.Thread(target=self.listen_for_heartbeats)
+            self.cache_update_listening_thread = threading.Thread(target=self.listen_for_cache_update)
+            self.heartbeat_receiving_thread = threading.Thread(target=self.listen_for_heartbeats)
             self.heartbeat_timeout_thread = threading.Thread(target=self.check_heartbeat_timeout)
             self.leader_election_thread = threading.Thread(target=self.leader_election)
-            self.client_message_listener_thread = threading.Thread(target=self.listen_for_client_messages)
+            self.client_message_listening_thread = threading.Thread(target=self.listen_for_client_messages)
 
-            self.cache_update_listener_thread.start()
-            self.heartbeat_receive_thread.start()
+            self.cache_update_listening_thread.start()
+            self.heartbeat_receiving_thread.start()
             self.heartbeat_timeout_thread.start()
             self.leader_election_thread.start()
-            self.client_message_listener_thread.start()
+            self.client_message_listening_thread.start()
 
             self.is_admin_of_groupchat = True
     
     # Handle the tasks of the LEADER server
-    def start_listen_client_messages(self):
+    def start_listening_to_client_messages(self):
 
-        self.client_message_listener_thread = threading.Thread(target=self.listen_for_client_messages)
-        self.client_message_listener_thread.start()
+        self.client_message_listening_thread = threading.Thread(target=self.listen_for_client_messages)
+        self.client_message_listening_thread.start()
         self.is_admin_of_groupchat = True
     
     def get_broadcast_address(self):
         IP = self.server_address
-        MASK = self.subnet_mask
+        mask = self.subnet_mask
         host = ipaddress.IPv4Address(IP)
-        net = ipaddress.IPv4Network(IP + '/' + MASK, False)
-
-        # print('Host:', ipaddress.IPv4Address(int(host) & int(net.hostmask)))
-        # print('Broadcast:', net.broadcast_address)
+        net = ipaddress.IPv4Network(IP + '/' + mask, False)
         broadcast_address = str(net.broadcast_address) 
         return broadcast_address
             
     def send_heartbeat(self):
-        print(self.server_id+": "+"Heartbeat Sending started")
-        #print("Local Server Cache:", self.local_servers_cache)
+        print(self.server_id+": "+"Heartbeat started")
         while True:
             time.sleep(10)
             failed_group_server = []
@@ -243,13 +223,12 @@ class Server(multiprocessing.Process):
                     count = 0
                     for i in range(0,3):
                         acknowledgment_received = self.send_heartbeat_to_server(server_address[0], server_heartbeat_tcp_listener_port)
-                        #acknowledgment_received = "YES"
                         if acknowledgment_received:
-                            print(self.server_id+": "+"Heartbeat acknowledgment received from "+server_id)
+                            print(self.server_id+": "+"Heartbeat acknowledgment received from " + server_id)
                             break
                         else:
-                            count = count + 1
-                            print(f"No acknowledgment received from {server_id}. Server may be down. Error Count : {count}")
+                            count += 1
+                            print(f"No acknowledgment received from {server_id}. Server could be down. Count of errors: {count}")
                             if count == 3:
                                 failed_group_server.append(server_id)
 
@@ -262,10 +241,10 @@ class Server(multiprocessing.Process):
         acknowledgment_received = False
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(2)  # Timeout for the connection
+                s.settimeout(3)  # Timeout for the connection
+
                 # Combine server address and port into a tuple
                 server_address_with_port = (server_address, server_port)
-                #print(self.server_id+": "+"Send Heartbeat to: "+str(server_address_with_port[0])+":"+str(server_address_with_port[1]))
                 print(self.server_id+": "+"Send Heartbeat to: "+str(server_address_with_port))
                 s.connect(server_address_with_port)
                 s.sendall(b'HEARTBEAT')
@@ -284,7 +263,6 @@ class Server(multiprocessing.Process):
                     try:
                         s.bind((self.server_address, server_heartbeat_tcp_listener_port))
                         actual_port = s.getsockname()[1]
-                        #print(self.server_id+": "+"Heartbeat Listener Started on port "+str(actual_port))
                         s.listen()
                         conn, addr = s.accept()
                         with conn:
@@ -318,8 +296,8 @@ class Server(multiprocessing.Process):
 
         # if server is not already a groupchat server start threads for groupchat tasks
         if self.is_admin_of_groupchat == False:
-            start_listen_client_message_thread = threading.Thread(target=self.start_listen_client_messages)
-            start_listen_client_message_thread.start()
+            listen_client_message_thread = threading.Thread(target=self.start_listening_to_client_messages)
+            listen_client_message_thread.start()
 
     # find out which clients need to be informed about their groupchat server change
     def update_group_server_of_client(self, reassigned_groups):
@@ -377,14 +355,14 @@ class Server(multiprocessing.Process):
     # listen for servers if they want to join the DS
     def listen_for_servers(self):
 
-        BROADCAST_PORT = server_broadcast_listener_port
+        broadcast_port = server_broadcast_listener_port
         BROADCAST_ADDRESS = self.broadcast_address
 
         # Create a UDP socket
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # Set the socket to broadcast and enable reusing addresses
         listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        listen_socket.bind(('', BROADCAST_PORT))
+        listen_socket.bind(('', broadcast_port))
 
         print(self.server_id+": "+"Listening to server register broadcast messages")
 
@@ -419,12 +397,12 @@ class Server(multiprocessing.Process):
         server_socket.close()
 
     def listen_for_clients(self):
-        BROADCAST_PORT = client_broadcast_listener_port
+        broadcast_port = client_broadcast_listener_port
         BROADCAST_ADDRESS = self.broadcast_address
 
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)  
-        listen_socket.bind(('', BROADCAST_PORT))
+        listen_socket.bind(('', broadcast_port))
 
         print(f"{self.server_id}: Listening for client connections")
 
@@ -546,14 +524,14 @@ class Server(multiprocessing.Process):
             # Use a different separator that won't appear in JSON
             separator = "|||"
 
-            MSG = f"{servers_cache_json}{separator}{clients_cache_json}{separator}{group_cache_json}"
+            message = f"{servers_cache_json}{separator}{clients_cache_json}{separator}{group_cache_json}"
             
             broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             time.sleep(2)
 
-            broadcast_socket.sendto(MSG.encode('utf-8'), (BROADCAST_ADDRESS, PORT))
+            broadcast_socket.sendto(message.encode('utf-8'), (BROADCAST_ADDRESS, PORT))
             print(f"{self.server_id}: Cache update broadcast sent")
             
         except Exception as e:
@@ -564,11 +542,11 @@ class Server(multiprocessing.Process):
     # listen for update of the groupview/server cache by LEADER server
     def listen_for_cache_update(self):
         BROADCAST_ADDRESS = self.broadcast_address
-        BROADCAST_PORT = 5980
+        broadcast_port = 5980
 
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        listen_socket.bind(('', BROADCAST_PORT))
+        listen_socket.bind(('', broadcast_port))
 
         print(f"{self.server_id}: Listening to cache update broadcast messages")
 
@@ -850,7 +828,7 @@ class Server(multiprocessing.Process):
 
         # Start LEADER server functionality
         print(f"{self.server_id}: Starting LEADER server functionality after election")
-        self.run_funcs()
+        self.start_server_functionalities()
 
         # Notify all clients about the new server
         self.notify_clients_new_server()

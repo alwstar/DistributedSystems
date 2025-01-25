@@ -187,17 +187,17 @@ class Server(multiprocessing.Process):
             self.cache_update_listening_thread = threading.Thread(target=self.listen_for_cache_update)
             self.heartbeat_receiving_thread = threading.Thread(target=self.listen_for_heartbeats)
             self.heartbeat_timeout_thread = threading.Thread(target=self.check_heartbeat_timeout)
-            self.leader_election_thread = threading.Thread(target=self.leader_election)
+            self.election_listening_thread = threading.Thread(target=self.listen_for_election_messages)  # Neu
             self.client_message_listening_thread = threading.Thread(target=self.listen_for_client_messages)
 
             self.cache_update_listening_thread.start()
             self.heartbeat_receiving_thread.start()
             self.heartbeat_timeout_thread.start()
-            self.leader_election_thread.start()
+            self.election_listening_thread.start()  # Neu
             self.client_message_listening_thread.start()
 
             self.is_admin_of_groupchat = True
-    
+        
     # Handle the tasks of the LEADER server
     def start_listening_to_client_messages(self):
 
@@ -328,18 +328,14 @@ class Server(multiprocessing.Process):
 
     
     def check_heartbeat_timeout(self):
-        while self.keep_running_nonLeader == True:
-            time.sleep(5)  # Adjust the interval as needed
+        while self.keep_running_nonLeader:
+            time.sleep(5)
             if self.last_heartbeat_timestamp is not None:
                 current_time = time.time()
-                # Define the timeout period (15 seconds)
                 timeout_duration = 15
                 if current_time - self.last_heartbeat_timestamp >= timeout_duration:
-                    print(self.server_id+": "+"No heartbeats received for "+str(timeout_duration)+" seconds. Initiating LCR...")
-                    # Call a function to initiate the LCR algorithm here
-                    print("Server cache:", self.local_servers_cache)
-                    Server.local_servers_cache = self.local_servers_cache
-                    self.start_leader_election()
+                    print(f"{self.server_id}: No heartbeats received for {timeout_duration} seconds. Starting Bully algorithm...")
+                    self.start_election()  # Starte Bully-Algorithmus statt LCR
     
     # find highest server ID in cache
     def get_last_server_id(self):      
@@ -675,7 +671,6 @@ class Server(multiprocessing.Process):
         except Exception as e:
             print(f"{self.server_id}: Error in send_chat_message_to_clients: {e}")        
 
-    # out
     def start_leader_election(self):
         #Reset last heartbeat timestamp
         self.last_heartbeat_timestamp = None
@@ -689,7 +684,6 @@ class Server(multiprocessing.Process):
             if neighbor_info:
                 self.send_election_message(neighbor_info['server_address'], uuid=None, isLeader=False)
 
-    # out
     def send_election_message(self, neighbor_address, uuid, isLeader):
         # Determine if server should suggest itself as leader
         should_suggest_leader = (not isLeader and 
@@ -751,81 +745,42 @@ class Server(multiprocessing.Process):
         participant = p
     
     def leader_election(self):
-        while self.keep_running_nonLeader:
+        # Remove the reference to Server.local_servers_cache
+        while self.keep_running_nonLeader == True:
             try:
                 data, address = self.ring_socket.recvfrom(4096)
+                # Reset last heartbeat timestamp
+                self.last_heartbeat_timestamp = None
                 if data:
-                    message = json.loads(data.decode())
-                    msg_type = message.get('type')
-                    sender_id = message.get('id')
-                    
-                    if msg_type == 'ELECTION':
-                        print(f"Received ELECTION from {sender_id}")
-                        if sender_id < self.server_uuid:
-                            # Send OK and start new election since we have higher ID
-                            self.send_ok_message(address)
-                            self.start_election()
-                        
-                    elif msg_type == 'OK':
-                        print(f"Received OK from {sender_id}")
-                        # Someone with higher ID responded - stop election
-                        self.election_in_progress = False
-                        
-                    elif msg_type == 'COORDINATOR':
-                        print(f"Received COORDINATOR from {sender_id}")
-                        # Update leader and stop election
-                        self.leader_id = sender_id
-                        self.election_in_progress = False
-                        
+                    election_message = json.loads(data.decode())
+                    received_id = election_message.get('id')
+                    received_isLeader = election_message.get('isLeader')
+                    print("Received UUID:", received_id)
+                    print("Own UUID:", self.server_uuid)
+                    print("Received isLeader:", received_isLeader)
+                    if received_isLeader == False:
+                        if not self.participant:
+                            neighbor_info = self.get_neighbour('right')
+                            print("got neighbor", neighbor_info)
+                            if neighbor_info:
+                                self.send_election_message(neighbor_info['server_address'], received_id, received_isLeader)
+                        self.participant = True
+                    elif received_isLeader == True:
+                        if received_id == self.server_uuid:
+                            self.handle_leader_tasks()
+                        elif received_id > self.server_uuid:
+                            neighbor_info = self.get_neighbour('right')
+                            print("got neighbor", neighbor_info)
+                            if neighbor_info:
+                                self.send_election_message(neighbor_info['server_address'], received_id, received_isLeader)
+                        else:
+                            print("Failed")
+                        self.participant = False
+                    else:
+                        print("Leader Election failed")
             except Exception as e:
                 print(f"Error in leader election: {e}")
-                time.sleep(1)
-
-    def start_election(self):
-        """Start an election by sending ELECTION message to higher-ID processes"""
-        if not hasattr(self, 'election_in_progress') or not self.election_in_progress:
-            self.election_in_progress = True
-            print("Starting election")
-            
-            election_msg = {
-                'type': 'ELECTION',
-                'id': self.server_uuid
-            }
-            
-            higher_id_exists = False
-            for server_id, addr in self.local_servers_cache.items():
-                if addr[0] != self.server_address and server_id > self.server_uuid:
-                    self.ring_socket.sendto(json.dumps(election_msg).encode(), 
-                                        (addr[0], leader_election_port))
-                    higher_id_exists = True
-            
-            if not higher_id_exists:
-                # No higher IDs - declare victory
-                self.declare_victory()
-
-    def send_ok_message(self, address):
-        """Send OK message back to a lower-ID process"""
-        ok_msg = {
-            'type': 'OK',
-            'id': self.server_uuid
-        }
-        self.ring_socket.sendto(json.dumps(ok_msg).encode(), address)
-
-    def declare_victory(self):
-        """Declare self as coordinator"""
-        coordinator_msg = {
-            'type': 'COORDINATOR',
-            'id': self.server_uuid
-        }
-        
-        # Broadcast victory to all other processes
-        for server_id, addr in self.local_servers_cache.items():
-            if addr[0] != self.server_address:
-                self.ring_socket.sendto(json.dumps(coordinator_msg).encode(),
-                                    (addr[0], leader_election_port))
-        
-        # Handle becoming leader
-        self.handle_leader_tasks()
+                time.sleep(1)  # Add small delay to prevent tight loop
 
     # handle the tasks of the LEADER server
     def handle_leader_tasks(self):
@@ -895,3 +850,116 @@ class Server(multiprocessing.Process):
 
     def stop_threads(self):
         self.keep_running_nonLeader = False
+
+    # Neue Funktionen für den Bully-Algorithmus
+
+    def start_election(self):
+        """
+        Startet einen neuen Wahlprozess im Bully-Algorithmus.
+        """
+        print(f"{self.server_id}: Starting election process")
+        self.last_heartbeat_timestamp = None
+        
+        # Finde alle Server mit höherer ID
+        higher_servers = []
+        current_server_num = ord(self.server_id) if self.server_id != "LEADER" else ord('Z')
+        
+        for server_id, addr in self.local_servers_cache.items():
+            if server_id != "LEADER" and ord(server_id) > current_server_num:
+                higher_servers.append((server_id, addr))
+        
+        if not higher_servers:
+            # Wenn keine höheren Server existieren, erkläre dich selbst zum Leader
+            print(f"{self.server_id}: No higher servers found, declaring self as leader")
+            self.handle_leader_tasks()
+            return
+        
+        # Sende ELECTION Nachricht an alle höheren Server
+        for server_id, addr in higher_servers:
+            self.send_election_request(addr[0])
+        
+        # Warte auf OK Antworten
+        self.wait_for_responses()
+
+    def send_election_request(self, server_address):
+        """
+        Sendet eine ELECTION Nachricht an einen Server.
+        """
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(3)
+                s.connect((server_address, leader_election_port))
+                message = "ELECTION"
+                s.sendall(message.encode())
+                print(f"{self.server_id}: Sent election request to {server_address}")
+        except Exception as e:
+            print(f"{self.server_id}: Failed to send election request to {server_address}: {e}")
+
+    def wait_for_responses(self):
+        """
+        Wartet auf OK Antworten von höheren Servern.
+        """
+        timeout = 5  # Timeout in Sekunden
+        start_time = time.time()
+        received_ok = False
+        
+        while time.time() - start_time < timeout:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(1)
+                    s.bind((self.server_address, leader_election_port))
+                    s.listen(1)
+                    conn, addr = s.accept()
+                    with conn:
+                        data = conn.recv(1024).decode()
+                        if data == "OK":
+                            received_ok = True
+                            print(f"{self.server_id}: Received OK from {addr}")
+                            break
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"{self.server_id}: Error waiting for responses: {e}")
+        
+        if not received_ok:
+            # Wenn keine OK Antwort empfangen wurde, erkläre dich selbst zum Leader
+            print(f"{self.server_id}: No OK responses received, declaring self as leader")
+            self.handle_leader_tasks()
+
+    def handle_election_message(self, sender_address):
+        """
+        Behandelt eingehende ELECTION Nachrichten.
+        """
+        try:
+            # Sende OK zurück
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.connect((sender_address, leader_election_port))
+                s.sendall("OK".encode())
+            
+            # Starte eigene Wahl
+            self.start_election()
+        except Exception as e:
+            print(f"{self.server_id}: Error handling election message: {e}")
+
+    def listen_for_election_messages(self):
+        """
+        Hört auf eingehende Wahl-Nachrichten.
+        """
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind((self.server_address, leader_election_port))
+                s.listen()
+                
+                while self.keep_running_nonLeader:
+                    try:
+                        conn, addr = s.accept()
+                        with conn:
+                            data = conn.recv(1024).decode()
+                            if data == "ELECTION":
+                                print(f"{self.server_id}: Received election message from {addr}")
+                                self.handle_election_message(addr[0])
+                    except Exception as e:
+                        print(f"{self.server_id}: Error in election message loop: {e}")
+                        time.sleep(1)
+        except Exception as e:
+            print(f"{self.server_id}: Error setting up election listener: {e}")

@@ -36,6 +36,10 @@ class Server(multiprocessing.Process):
         self.local_group_cache = dict()
         self.client_counter = 0  # Global counter for all clients
 
+        self.election_socket = None
+        self.is_waiting_for_responses = False
+        self.election_in_progress = False
+
         # Rest of initialization
         self.active_interface = self.get_active_interface()
         self.server_address = self.get_local_ip()
@@ -853,10 +857,25 @@ class Server(multiprocessing.Process):
 
     # Neue Funktionen für den Bully-Algorithmus
 
+    def setup_election_socket(self):
+        """
+        Erstellt und konfiguriert den Socket für die Wahlkommunikation
+        """
+        if self.election_socket is None:
+            self.election_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.election_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.election_socket.bind((self.server_address, leader_election_port))
+            self.election_socket.listen()
+        
     def start_election(self):
         """
         Startet einen neuen Wahlprozess im Bully-Algorithmus.
         """
+        if self.election_in_progress:
+            print(f"{self.server_id}: Election already in progress")
+            return
+
+        self.election_in_progress = True
         print(f"{self.server_id}: Starting election process")
         self.last_heartbeat_timestamp = None
         
@@ -869,8 +888,8 @@ class Server(multiprocessing.Process):
                 higher_servers.append((server_id, addr))
         
         if not higher_servers:
-            # Wenn keine höheren Server existieren, erkläre dich selbst zum Leader
             print(f"{self.server_id}: No higher servers found, declaring self as leader")
+            self.election_in_progress = False
             self.handle_leader_tasks()
             return
         
@@ -889,7 +908,7 @@ class Server(multiprocessing.Process):
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(3)
                 s.connect((server_address, leader_election_port))
-                message = "ELECTION"
+                message = "ELECTION|" + self.server_id
                 s.sendall(message.encode())
                 print(f"{self.server_id}: Sent election request to {server_address}")
         except Exception as e:
@@ -899,34 +918,39 @@ class Server(multiprocessing.Process):
         """
         Wartet auf OK Antworten von höheren Servern.
         """
+        self.is_waiting_for_responses = True
         timeout = 5  # Timeout in Sekunden
         start_time = time.time()
         received_ok = False
         
-        while time.time() - start_time < timeout:
+        while time.time() - start_time < timeout and self.keep_running_nonLeader:
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.settimeout(1)
-                    s.bind((self.server_address, leader_election_port))
-                    s.listen(1)
-                    conn, addr = s.accept()
-                    with conn:
-                        data = conn.recv(1024).decode()
-                        if data == "OK":
-                            received_ok = True
-                            print(f"{self.server_id}: Received OK from {addr}")
-                            break
+                if not hasattr(self, 'election_socket') or self.election_socket is None:
+                    self.setup_election_socket()
+                
+                self.election_socket.settimeout(1)
+                conn, addr = self.election_socket.accept()
+                with conn:
+                    data = conn.recv(1024).decode()
+                    if data == "OK":
+                        received_ok = True
+                        print(f"{self.server_id}: Received OK from {addr}")
+                        break
             except socket.timeout:
                 continue
             except Exception as e:
                 print(f"{self.server_id}: Error waiting for responses: {e}")
         
-        if not received_ok:
-            # Wenn keine OK Antwort empfangen wurde, erkläre dich selbst zum Leader
+        self.is_waiting_for_responses = False
+        
+        if not received_ok and self.keep_running_nonLeader:
             print(f"{self.server_id}: No OK responses received, declaring self as leader")
+            self.election_in_progress = False
             self.handle_leader_tasks()
+        else:
+            self.election_in_progress = False
 
-    def handle_election_message(self, sender_address):
+    def handle_election_message(self, sender_address, sender_id):
         """
         Behandelt eingehende ELECTION Nachrichten.
         """
@@ -936,8 +960,9 @@ class Server(multiprocessing.Process):
                 s.connect((sender_address, leader_election_port))
                 s.sendall("OK".encode())
             
-            # Starte eigene Wahl
-            self.start_election()
+            # Starte eigene Wahl nur wenn wir eine höhere ID haben
+            if ord(self.server_id) > ord(sender_id):
+                self.start_election()
         except Exception as e:
             print(f"{self.server_id}: Error handling election message: {e}")
 
@@ -945,21 +970,31 @@ class Server(multiprocessing.Process):
         """
         Hört auf eingehende Wahl-Nachrichten.
         """
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind((self.server_address, leader_election_port))
-                s.listen()
-                
-                while self.keep_running_nonLeader:
-                    try:
-                        conn, addr = s.accept()
-                        with conn:
-                            data = conn.recv(1024).decode()
-                            if data == "ELECTION":
-                                print(f"{self.server_id}: Received election message from {addr}")
-                                self.handle_election_message(addr[0])
-                    except Exception as e:
-                        print(f"{self.server_id}: Error in election message loop: {e}")
-                        time.sleep(1)
-        except Exception as e:
-            print(f"{self.server_id}: Error setting up election listener: {e}")
+        self.setup_election_socket()
+        
+        while self.keep_running_nonLeader:
+            try:
+                if not self.is_waiting_for_responses:  # Nur wenn nicht auf Antworten wartend
+                    conn, addr = self.election_socket.accept()
+                    with conn:
+                        data = conn.recv(1024).decode()
+                        if data.startswith("ELECTION"):
+                            parts = data.split("|")
+                            sender_id = parts[1] if len(parts) > 1 else "Unknown"
+                            print(f"{self.server_id}: Received election message from {addr} (ID: {sender_id})")
+                            self.handle_election_message(addr[0], sender_id)
+            except Exception as e:
+                if self.keep_running_nonLeader:  # Nur Fehler ausgeben wenn der Thread noch laufen soll
+                    print(f"{self.server_id}: Error in election message loop: {e}")
+                time.sleep(1)
+
+    def cleanup(self):
+        """
+        Räumt die Ressourcen auf
+        """
+        if self.election_socket:
+            try:
+                self.election_socket.close()
+            except:
+                pass
+            self.election_socket = None

@@ -675,6 +675,7 @@ class Server(multiprocessing.Process):
         except Exception as e:
             print(f"{self.server_id}: Error in send_chat_message_to_clients: {e}")        
 
+    # out
     def start_leader_election(self):
         #Reset last heartbeat timestamp
         self.last_heartbeat_timestamp = None
@@ -688,6 +689,7 @@ class Server(multiprocessing.Process):
             if neighbor_info:
                 self.send_election_message(neighbor_info['server_address'], uuid=None, isLeader=False)
 
+    # out
     def send_election_message(self, neighbor_address, uuid, isLeader):
         # Determine if server should suggest itself as leader
         should_suggest_leader = (not isLeader and 
@@ -749,42 +751,81 @@ class Server(multiprocessing.Process):
         participant = p
     
     def leader_election(self):
-        # Remove the reference to Server.local_servers_cache
-        while self.keep_running_nonLeader == True:
+        while self.keep_running_nonLeader:
             try:
                 data, address = self.ring_socket.recvfrom(4096)
-                # Reset last heartbeat timestamp
-                self.last_heartbeat_timestamp = None
                 if data:
-                    election_message = json.loads(data.decode())
-                    received_id = election_message.get('id')
-                    received_isLeader = election_message.get('isLeader')
-                    print("Received UUID:", received_id)
-                    print("Own UUID:", self.server_uuid)
-                    print("Received isLeader:", received_isLeader)
-                    if received_isLeader == False:
-                        if not self.participant:
-                            neighbor_info = self.get_neighbour('right')
-                            print("got neighbor", neighbor_info)
-                            if neighbor_info:
-                                self.send_election_message(neighbor_info['server_address'], received_id, received_isLeader)
-                        self.participant = True
-                    elif received_isLeader == True:
-                        if received_id == self.server_uuid:
-                            self.handle_leader_tasks()
-                        elif received_id > self.server_uuid:
-                            neighbor_info = self.get_neighbour('right')
-                            print("got neighbor", neighbor_info)
-                            if neighbor_info:
-                                self.send_election_message(neighbor_info['server_address'], received_id, received_isLeader)
-                        else:
-                            print("Failed")
-                        self.participant = False
-                    else:
-                        print("Leader Election failed")
+                    message = json.loads(data.decode())
+                    msg_type = message.get('type')
+                    sender_id = message.get('id')
+                    
+                    if msg_type == 'ELECTION':
+                        print(f"Received ELECTION from {sender_id}")
+                        if sender_id < self.server_uuid:
+                            # Send OK and start new election since we have higher ID
+                            self.send_ok_message(address)
+                            self.start_election()
+                        
+                    elif msg_type == 'OK':
+                        print(f"Received OK from {sender_id}")
+                        # Someone with higher ID responded - stop election
+                        self.election_in_progress = False
+                        
+                    elif msg_type == 'COORDINATOR':
+                        print(f"Received COORDINATOR from {sender_id}")
+                        # Update leader and stop election
+                        self.leader_id = sender_id
+                        self.election_in_progress = False
+                        
             except Exception as e:
                 print(f"Error in leader election: {e}")
-                time.sleep(1)  # Add small delay to prevent tight loop
+                time.sleep(1)
+
+    def start_election(self):
+        """Start an election by sending ELECTION message to higher-ID processes"""
+        if not hasattr(self, 'election_in_progress') or not self.election_in_progress:
+            self.election_in_progress = True
+            print("Starting election")
+            
+            election_msg = {
+                'type': 'ELECTION',
+                'id': self.server_uuid
+            }
+            
+            higher_id_exists = False
+            for server_id, addr in self.local_servers_cache.items():
+                if addr[0] != self.server_address and server_id > self.server_uuid:
+                    self.ring_socket.sendto(json.dumps(election_msg).encode(), 
+                                        (addr[0], leader_election_port))
+                    higher_id_exists = True
+            
+            if not higher_id_exists:
+                # No higher IDs - declare victory
+                self.declare_victory()
+
+    def send_ok_message(self, address):
+        """Send OK message back to a lower-ID process"""
+        ok_msg = {
+            'type': 'OK',
+            'id': self.server_uuid
+        }
+        self.ring_socket.sendto(json.dumps(ok_msg).encode(), address)
+
+    def declare_victory(self):
+        """Declare self as coordinator"""
+        coordinator_msg = {
+            'type': 'COORDINATOR',
+            'id': self.server_uuid
+        }
+        
+        # Broadcast victory to all other processes
+        for server_id, addr in self.local_servers_cache.items():
+            if addr[0] != self.server_address:
+                self.ring_socket.sendto(json.dumps(coordinator_msg).encode(),
+                                    (addr[0], leader_election_port))
+        
+        # Handle becoming leader
+        self.handle_leader_tasks()
 
     # handle the tasks of the LEADER server
     def handle_leader_tasks(self):

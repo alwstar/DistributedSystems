@@ -983,6 +983,10 @@ class Server(multiprocessing.Process):
                             sender_id = parts[1] if len(parts) > 1 else "Unknown"
                             print(f"{self.server_id}: Received election message from {addr} (ID: {sender_id})")
                             self.handle_election_message(addr[0], sender_id)
+                        elif data == "COORDINATOR":
+                            print(f"{self.server_id}: Received COORDINATOR message. Stopping election process.")
+                            self.election_in_progress = False
+                            self.keep_running_nonLeader = True  # Ensure we keep running as non-leader
             except Exception as e:
                 if self.keep_running_nonLeader:  # Nur Fehler ausgeben wenn der Thread noch laufen soll
                     print(f"{self.server_id}: Error in election message loop: {e}")

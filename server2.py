@@ -678,23 +678,26 @@ class Server(multiprocessing.Process):
     def start_leader_election(self):
         """
         Initiiert den Leader Election Prozess.
-        Wenn nur ein Server übrig ist, wird dieser direkt zum Leader.
-        Ansonsten wird eine Election Message an den rechten Nachbarn gesendet.
         """
+        print("Starting leader election process...")
         self.last_heartbeat_timestamp = None
         self.participant = False  # Reset participant status
 
         if len(self.local_servers_cache) == 1:
+            print("Only one server remaining, becoming leader directly")
             self.become_leader()
             return
 
         neighbor = self.get_right_neighbor()
         if neighbor:
+            print(f"Starting election with own UUID: {self.server_uuid}")
             self.send_election_message(
                 neighbor_address=neighbor,
                 proposed_leader_id=self.server_uuid,
                 is_leader_decided=False
             )
+        else:
+            print("No neighbor found to start election")
 
     def send_election_message(self, neighbor_address, proposed_leader_id, is_leader_decided):
         """
@@ -740,48 +743,66 @@ class Server(multiprocessing.Process):
         
         return self.local_servers_cache[next_id]
  
-    def leader_election(self):
+    def send_election_message(self, neighbor_address, proposed_leader_id, is_leader_decided):
         """
-        Hauptschleife des Leader Election Prozesses.
-        Verarbeitet eingehende Election Messages und leitet sie entsprechend weiter.
+        Sendet eine Election Message an den Nachbarn.
+        Args:
+            neighbor_address: (IP, Port) des Nachbarn
+            proposed_leader_id: UUID des vorgeschlagenen Leaders
+            is_leader_decided: Bool ob Leader bereits feststeht
         """
-        while self.keep_running_nonLeader:
-            try:
-                data, _ = self.ring_socket.recvfrom(4096)
-                self.last_heartbeat_timestamp = None
-                
-                if not data:
-                    continue
-                    
-                message = json.loads(data.decode())
-                received_id = message.get('id')
-                is_leader_decided = message.get('isLeader')
-                
-                print(f"Received election message - ID: {received_id}, Leader decided: {is_leader_decided}")
-                
-                if not is_leader_decided:
-                    self.handle_election_phase(received_id)
-                else:
-                    self.handle_leader_phase(received_id)
-                    
-            except Exception as e:
-                print(f"Error in leader election: {e}")
-                time.sleep(1)
+        try:
+            message = {
+                "id": proposed_leader_id,
+                "isLeader": is_leader_decided
+            }
+            
+            # Ensure we're sending to the right address format
+            target_address = (
+                neighbor_address[0] if isinstance(neighbor_address, list) else neighbor_address[0],
+                leader_election_port
+            )
+            
+            self.ring_socket.sendto(
+                json.dumps(message).encode(),
+                target_address
+            )
+            
+            print(f"Sent election message: {message} to {target_address}")
+        except Exception as e:
+            print(f"Error sending election message: {e}")
 
     def handle_election_phase(self, received_id):
         """
         Verarbeitet Election Messages während der Wahlphase.
+        Implementiert die Logik des LCR-Algorithmus für die Election Phase.
         """
+        neighbor = self.get_right_neighbor()
+        if not neighbor:
+            print("No neighbor found, cannot continue election")
+            return
+
+        print(f"Comparing received ID {received_id} with own ID {self.server_uuid}")
+        
         if not self.participant:
-            neighbor = self.get_right_neighbor()
-            if neighbor:
-                if received_id > self.server_uuid:
-                    # Leite größere ID weiter
-                    self.send_election_message(neighbor, received_id, False)
-                else:
-                    # Schlage eigene ID vor
-                    self.send_election_message(neighbor, self.server_uuid, False)
+            if received_id > self.server_uuid:
+                # Leite größere ID weiter
+                print(f"Forwarding larger ID: {received_id}")
+                self.send_election_message(neighbor, received_id, False)
+            else:
+                # Schlage eigene ID vor
+                print(f"Proposing own ID: {self.server_uuid}")
+                self.send_election_message(neighbor, self.server_uuid, False)
             self.participant = True
+        else:
+            if received_id == self.server_uuid:
+                # Wenn eigene ID zurückkommt, sind wir Leader
+                print("Received own ID back, becoming leader")
+                self.send_election_message(neighbor, self.server_uuid, True)
+            elif received_id > self.server_uuid:
+                # Leite größere ID weiter
+                print(f"Forwarding larger ID while participating: {received_id}")
+                self.send_election_message(neighbor, received_id, False)
 
     def handle_leader_phase(self, received_id):
         """

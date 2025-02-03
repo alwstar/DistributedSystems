@@ -18,7 +18,7 @@ class Client(multiprocessing.Process):
         while True:
             action = "r"
             if (action == "r"):
-                group = "A"
+                group = "LEADER"
                 success = self.register("register", group)
 
                 if success == 0:

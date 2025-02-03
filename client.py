@@ -18,7 +18,7 @@ class Client(multiprocessing.Process):
         while True:
             action = input("Client: Enter type of action ('r' to register): ")
             if (action == "r"):
-                group = input("Client: Which group dou you want to join? ")
+                group = "MAIN_CHAT"
                 success = self.register("register", group)
 
                 if success == 0:

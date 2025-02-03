@@ -137,7 +137,7 @@ class Server(multiprocessing.Process):
         os = self.get_os_type()
 
         BROADCAST_PORT = 49154     
-        MSG = bytes("HI MAIN SERVER", 'utf-8')
+        MSG = bytes("HI LEADER SERVER", 'utf-8')
 
         broadcast_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -146,7 +146,7 @@ class Server(multiprocessing.Process):
 
         received_response = False
 
-        # try 5 times to find the MAIN server, otherwise declares as new MAIN
+        # try 5 times to find the LEADER server, otherwise declares as new LEADER
         for i in range(0,5):
             print("Trying to find other servers...")
         
@@ -160,27 +160,27 @@ class Server(multiprocessing.Process):
                 message, server = broadcast_socket.recvfrom(1024)
                 server_response = message.decode('utf-8')
             except socket.timeout:
-                #print("No answer from MAIN server")
+                #print("No answer from LEADER server")
                 pass
             else:
                 if server_response:
                     match = re.search(r'\b([A-Za-z])\b$', message.decode('utf-8'))
                     self.server_id = match.group(1)
-                    print('Received message from MAIN server: ', message.decode('utf-8'))
+                    print('Received message from LEADER server: ', message.decode('utf-8'))
                     received_response = True
                     self.run_funcs()
                     break
         
         broadcast_socket.close()
-        # no response from MAIN server? declare as new MAIN server
+        # no response from LEADER server? declare as new LEADER server
         if not received_response:
-            print("No other server was found, declare as MAIN server.")
-            self.server_id = "MAIN"
+            print("No other server was found, declare as LEADER server.")
+            self.server_id = "LEADER"
             self.run_funcs()
 
     def run_funcs(self):
         #print(self.server_id+": "+"Up and running")
-        if self.server_id == "MAIN":
+        if self.server_id == "LEADER":
             client_listener_thread = threading.Thread(target=self.listen_for_clients)
             client_listener_thread.start()
 
@@ -295,7 +295,7 @@ class Server(multiprocessing.Process):
             except socket.error as e:
                 print(f"Error: {e}")
 
-    # find every group where the dead server was admin and reassign group to (new) MAIN server
+    # find every group where the dead server was admin and reassign group to (new) LEADER server
     def reassign_chat_groups(self, dead_server_id):
         
         reassigned_groups = []
@@ -476,7 +476,7 @@ class Server(multiprocessing.Process):
         # double check if group really exist
         for key in self.local_group_cache:
             if group == str(key):
-                if self.local_group_cache[key] == "MAIN":
+                if self.local_group_cache[key] == "LEADER":
                     addr = self.server_address
                 else:
                     id = self.local_group_cache[key]
@@ -548,7 +548,7 @@ class Server(multiprocessing.Process):
             broadcast_socket.sendto(MSG, (BROADCAST_ADDRESS, PORT))
         broadcast_socket.close()
 
-    # listen for update of the groupview/server cache by MAIN server
+    # listen for update of the groupview/server cache by LEADER server
     def listen_for_cache_update(self):
         BROADCAST_ADDRESS = self.broadcast_address
         BROADCAST_PORT = 5980
@@ -789,12 +789,12 @@ class Server(multiprocessing.Process):
         del self.local_servers_cache[self.server_id]
         print("Server Cache:", self.local_servers_cache)
         old_server_id = self.server_id
-        self.server_id = "MAIN"
+        self.server_id = "LEADER"
         print(self.server_id+": "+"Server ID was changed from: "+str(old_server_id)+" to "+str(self.server_id))
 
-        # check if new MAIN server was leader of any groupchats and reassign these to serverID MAIN
+        # check if new LEADER server was leader of any groupchats and reassign these to serverID LEADER
         self.reassign_chat_groups(old_server_id)
-        # reassign the groupchats of the old MAIN server to the new MAIN server
+        # reassign the groupchats of the old LEADER server to the new LEADER server
         self.reassign_chat_groups(self.server_id)
         self.stop_threads()
         self.run_funcs()

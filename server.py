@@ -584,7 +584,6 @@ class Server(multiprocessing.Process):
                     self.local_servers_cache = server_cache_json
                     self.local_clients_cache = client_cache_json
                     self.local_group_cache = group_cache_json
-                    print("Group Cache:  ", self.local_group_cache)
                     print("Server Cache: ", self.local_servers_cache)
                     print("Client Cache: ", self.local_clients_cache)
             except socket.timeout:

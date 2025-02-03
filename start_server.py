@@ -1,4 +1,4 @@
-from server2 import Server
+from server import Server
 import time
 
 if __name__ == '__main__':
